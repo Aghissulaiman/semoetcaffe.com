@@ -1,0 +1,41 @@
+# Dependency
+node_modules
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist
+build
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Test & coverage
+coverage
+.nyc_output
+test-results
+
+# Editor & OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+logs
+*.log
+
+# Docs & assets yang tidak dipakai runtime
+docs/
+*.md
+!README.md
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml

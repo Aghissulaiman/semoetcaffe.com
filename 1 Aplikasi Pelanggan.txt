@@ -1,0 +1,61 @@
+1. Aplikasi Pelanggan (Mobile App)
+Fokus di sini adalah performa lintas platform (iOS dan Android) yang smooth dan development yang cepat.
+
+Framework: Expo React Native. Sangat ideal untuk membangun aplikasi mobile dengan cepat tanpa harus menyentuh kode native yang terlalu dalam, apalagi dengan dukungan routing terbaru dari Expo.
+
+Styling: Tailwind CSS (menggunakan library seperti NativeWind) agar styling UI konsisten dan cepat.
+
+State Management: Zustand atau Redux Toolkit untuk mengatur keranjang belanja (cart) dan status login pengguna.
+
+2. Dashboard Admin & Owner (Web)
+Dashboard membutuhkan tabel data yang kompleks, grafik, dan antarmuka yang bersih.
+
+Framework: Next.js (dengan TypeScript). Cocok untuk membuat dashboard yang snappy dan aman dari sisi tipe data.
+
+UI Components: Kombinasi Tailwind CSS dan shadcn/ui. Ini akan membuat tampilan dashboard terlihat sangat profesional, modern, dan komponennya mudah dikustomisasi tanpa harus menulis CSS dari nol.
+
+Animasi & Interaksi: Framer Motion bisa ditambahkan sedikit untuk transisi halaman atau pop-up notifikasi pesanan masuk agar terasa lebih interaktif.
+
+Grafik/Chart: Recharts atau Chart.js untuk memvisualisasikan data penjualan di Owner Dashboard.
+
+3. Backend & API (Server)
+Backend harus mampu menangani banyak request pesanan secara bersamaan dan menyediakan API yang cepat.
+
+Bahasa & Framework:
+
+Bisa menggunakan Node.js dengan Express.js untuk membangun REST API yang cepat dan familiar di ekosistem JavaScript/TypeScript.
+
+Atau menggunakan Go (Golang) untuk service yang membutuhkan performa sangat tinggi dan konkurensi, seperti antrean pesanan (order queue) atau tracking real-time.
+
+Arsitektur: REST API standar sudah cukup untuk fase awal, dengan integrasi WebSocket (seperti Socket.io) khusus untuk real-time update pesanan di kasir dan notifikasi ke pelanggan.
+
+4. Database & ORM
+Data transaksi, menu, dan loyalitas tidak boleh hilang atau berantakan.
+
+Database Relasional: PostgreSQL. Pilihan paling tangguh untuk integritas data transaksi keuangan dan relasi antar tabel (user, order, menu, payment).
+
+ORM (Object-Relational Mapping): Prisma. Sangat mempermudah penulisan skema database, migrasi, dan query data dari backend dengan auto-completion yang sangat baik.
+
+Alternatif Backend-as-a-Service: Jika ingin melesat lebih cepat di Fase 1 tanpa harus mengatur server database dari nol, Supabase adalah opsi brilian. Supabase sudah membungkus PostgreSQL lengkap dengan fitur autentikasi dan real-time listener.
+
+5. Integrasi Pihak Ketiga (Third-Party Services)
+Jangan membuat ulang dari nol apa yang sudah ada penyedianya.
+
+Payment Gateway: Midtrans atau Xendit. Sangat andal untuk memproses QRIS, Virtual Account, dan E-Wallet dengan status callbacks otomatis (PAID/FAILED).
+
+OTP & Push Notification: Firebase (FCM untuk notifikasi pesanan) dan Firebase Auth (jika butuh login nomor HP/Google).
+
+AI Business Assistant: OpenAI API (GPT-4o mini atau sejenisnya) dihubungkan ke database baca-saja (read-only) untuk merespons pertanyaan Bu Rahma di dashboard.
+
+6. Development & Deployment Tools
+Untuk alur kerja (workflow) pengembangan yang rapi:
+
+Code Editor & DB GUI: VS Code untuk coding, dan DBeaver untuk melihat dan memanajemen isi database PostgreSQL dengan visual.
+
+API Testing: Postman untuk menguji endpoint backend sebelum dihubungkan ke frontend.
+
+Containerization: Docker. Sangat berguna untuk membungkus backend (Node.js/Go) dan database saat proses development atau deployment agar lingkungannya konsisten.
+
+Version Control: Git dan GitHub untuk menyimpan kode dan kolaborasi.
+
+Hosting: Vercel (untuk frontend Next.js) dan Railway atau Render (untuk backend Node.js/Go dan database).

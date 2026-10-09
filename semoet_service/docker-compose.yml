@@ -1,0 +1,144 @@
+# =============================================================================
+# Semoet Cafe - backend service + PostgreSQL
+#
+# Pakai:  docker compose up -d --build
+# Cek:   docker compose logs -f api
+# Stop:  docker compose down          (data tetap disimpan di named volume)
+# Reset: docker compose down -v       (PERINGATAN: menghapus seluruh data)
+#
+# Catatan: nilai default di bawah HANYA untuk development lokal.
+# Untuk deployment, simpan secret lewat environment variable atau file .env
+# yang tidak masuk version control (lihat .gitignore).
+# =============================================================================
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: semoet-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-semoet_cafe_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-semoet_local_password}
+      # Speed up initdb untuk volume lokal.
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+      TZ: Asia/Jakarta
+      PGTZ: Asia/Jakarta
+    ports:
+      # Diekspos supaya bisa dibuka lewat DBeaver di host.
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - semoet_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready hanya memastikan server menerima koneksi, belum tentu
+      # database sudah siap dipakai query.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-semoet_cafe_db}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - semoet
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: semoet-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        # Menunggu database benar-benar healthy, bukan sekadar container start.
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      APP_NAME: ${APP_NAME:-semoet-service}
+      API_PREFIX: ${API_PREFIX:-/api/v1}
+      PORT: 4000
+      HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+
+      # Host `db` = nama service di compose network, BUKAN localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-semoet_local_password}@db:5432/${POSTGRES_DB:-semoet_cafe_db}
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      DB_IDLE_TIMEOUT_MS: ${DB_IDLE_TIMEOUT_MS:-30000}
+      DB_CONNECTION_TIMEOUT_MS: ${DB_CONNECTION_TIMEOUT_MS:-5000}
+      DB_SSL: ${DB_SSL:-false}
+      DB_LOG_QUERIES: ${DB_LOG_QUERIES:-false}
+
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-ubah-secret-ini-minimal-32-karakter-panjang}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-ubah-secret-refresh-minimal-32-karakter}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-30d}
+      JWT_ISSUER: ${JWT_ISSUER:-semoet-cafe}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-semoet-mobile}
+
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      OTP_LENGTH: ${OTP_LENGTH:-6}
+      OTP_TTL_SECONDS: ${OTP_TTL_SECONDS:-300}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+      PASSWORD_RESET_TTL_SECONDS: ${PASSWORD_RESET_TTL_SECONDS:-3600}
+      REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-semoet_refresh}
+      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-10}
+
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Jakarta}
+      ORDER_NUMBER_PREFIX: ${ORDER_NUMBER_PREFIX:-SMO}
+      RESERVATION_PREFIX: ${RESERVATION_PREFIX:-RSV}
+      EVENT_BOOKING_PREFIX: ${EVENT_BOOKING_PREFIX:-EVT}
+      TAX_PERCENT: ${TAX_PERCENT:-0}
+      SERVICE_FEE_IDR: ${SERVICE_FEE_IDR:-0}
+      DELIVERY_FEE_IDR: ${DELIVERY_FEE_IDR:-0}
+      POINTS_EARN_DIVISOR: ${POINTS_EARN_DIVISOR:-10000}
+      LOYALTY_EXPIRY_DAYS: ${LOYALTY_EXPIRY_DAYS:-365}
+
+      PAYMENT_PROVIDER_DEFAULT: ${PAYMENT_PROVIDER_DEFAULT:-midtrans}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-semoet_dev_webhook_secret_12345}
+
+      # AI assistant (Gemini lewat endpoint OpenAI-compatible)
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      AI_MODEL: ${AI_MODEL:-gemini-2.5-flash}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_ASSISTANT_ENABLED: ${AI_ASSISTANT_ENABLED:-true}
+      AI_BASE_URL: ${AI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-30000}
+
+      # Object storage (Supabase)
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      STORAGE_BUCKET_NAME: ${STORAGE_BUCKET_NAME:-Semoet_Cafe}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@semoetcafe.com}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-SemoetAdmin123!}
+      SEED_ADMIN_PHONE: ${SEED_ADMIN_PHONE:-+628111000999}
+
+      TZ: Asia/Jakarta
+    ports:
+      - '${APP_PORT:-4000}:4000'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - semoet
+
+volumes:
+  semoet_pgdata:
+    driver: local
+
+networks:
+  semoet:
+    driver: bridge
