@@ -49,7 +49,9 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default('*'),
   RATE_LIMIT_WINDOW_MS: intPositive(60_000),
   RATE_LIMIT_MAX: intPositive(120),
-  AUTH_RATE_LIMIT_MAX: intPositive(10),
+  AUTH_RATE_LIMIT_MAX: intPositive(20),
+  /** Kuota refresh token terpisah supaya refresh yang gagal tidak menghabiskan kuota login. */
+  AUTH_REFRESH_LIMIT_MAX: intPositive(30),
 
   // Domain rules
   DEFAULT_TIMEZONE: z.string().default('Asia/Jakarta'),

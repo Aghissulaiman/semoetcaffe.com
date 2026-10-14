@@ -18,11 +18,16 @@ function build(options: Partial<Options> & { limit: number; windowMs: number }) 
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     keyGenerator: keyGeneratorByIp,
-    handler: (_req: Request, _res: Response) => {
+    handler: (_req: Request, res: Response) => {
       logger.warn({ ip: _req.ip }, '[rate-limit] limit exceeded');
-      throw new TooManyRequestsError(
-        'Terlalu banyak permintaan. Silakan coba lagi dalam beberapa saat.',
-      );
+      // express-rate-limit memasang header Retry-After (dalam detik) sebelum handler.
+      const retryAfter = res.getHeader('Retry-After');
+      let message = 'Terlalu banyak permintaan. Silakan coba lagi dalam beberapa saat.';
+      if (typeof retryAfter === 'string' && Number(retryAfter) > 0) {
+        const minutes = Math.max(1, Math.round(Number(retryAfter) / 60));
+        message = `Terlalu banyak percobaan. Coba lagi dalam ${minutes} menit.`;
+      }
+      throw new TooManyRequestsError(message);
     },
     ...options,
   });
@@ -38,6 +43,16 @@ export const globalLimiter = build({
 export const authLimiter = build({
   windowMs: 15 * 60 * 1000,
   limit: env.AUTH_RATE_LIMIT_MAX,
+  skipSuccessfulRequests: true,
+});
+
+/**
+ * Limit refresh token terpisah & lebih longgar: refresh yang gagal (mis. cookie
+ * kedaluwarsa saat app dibuka lagi) tidak boleh menghabiskan kuota login.
+ */
+export const refreshLimiter = build({
+  windowMs: 15 * 60 * 1000,
+  limit: env.AUTH_REFRESH_LIMIT_MAX,
   skipSuccessfulRequests: true,
 });
 

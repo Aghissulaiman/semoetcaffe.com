@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as authController from '../controllers/auth.controller.js';
 import { asyncHandler } from '../middlewares/asyncHandler.js';
 import { authenticate, requireActiveSession } from '../middlewares/authenticate.js';
-import { authLimiter, otpLimiter, readLimiter } from '../middlewares/rateLimit.js';
+import { authLimiter, otpLimiter, readLimiter, refreshLimiter } from '../middlewares/rateLimit.js';
 import { validate } from '../middlewares/validate.js';
 import {
   changePasswordSchema,
@@ -56,7 +56,7 @@ authRouter.post(
 // POST /auth/refresh - rotasi refresh token (body atau cookie).
 authRouter.post(
   '/refresh',
-  authLimiter,
+  refreshLimiter,
   validate({ body: refreshSchema }),
   asyncHandler(authController.refresh),
 );
