@@ -201,6 +201,12 @@ export async function findRoleIdsByPermissionKeys(keys: string[], executor: Exec
 // Sessions (user_sessions)
 // --------------------------------------------------------------------------
 export interface InsertSessionInput {
+  /**
+   * WAJIB diisi dan harus sama dengan `sessionId` yang disematkan ke JWT.
+   * Tanpa ini, DB akan memakai gen_random_uuid() sehingga `lockSessionById`
+   * (dipakai saat refresh) tidak pernah menemukan sesi → refresh selalu gagal.
+   */
+  id: string;
   userId: string;
   refreshTokenHash: string;
   deviceLabel?: string | null;
@@ -210,6 +216,7 @@ export interface InsertSessionInput {
 
 export async function insertSession(input: InsertSessionInput, executor: Exec = db) {
   const { text, values } = buildInsert('user_sessions', {
+    id: input.id,
     user_id: input.userId,
     refresh_token_hash: input.refreshTokenHash,
     device_label: input.deviceLabel ?? null,

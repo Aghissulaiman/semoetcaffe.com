@@ -76,6 +76,7 @@ async function issueSession(
 
   await authRepo.insertSession(
     {
+      id: sessionId,
       userId: user.id,
       refreshTokenHash: placeholderHash,
       deviceLabel: device.deviceLabel ?? null,
