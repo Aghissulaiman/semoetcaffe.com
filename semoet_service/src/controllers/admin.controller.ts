@@ -72,6 +72,24 @@ export async function reportProducts(req: Request, res: Response): Promise<Respo
   });
 }
 
+// GET /admin/reports/daily - deret harian (kotor, diskon, bersih, modal, laba, qty)
+export async function reportDaily(req: Request, res: Response): Promise<Response> {
+  const data = await adminService.reportDaily(getQuery<ReportSalesQuery>(req));
+  return sendSuccess(res, data);
+}
+
+// GET /admin/reports/breakdown - sebaran metode pesanan/pembayaran, jam, hari, status
+export async function reportBreakdown(req: Request, res: Response): Promise<Response> {
+  const data = await adminService.reportBreakdown(getQuery<ReportSalesQuery>(req));
+  return sendSuccess(res, data);
+}
+
+// GET /admin/reports/categories - rekap penjualan per kategori produk
+export async function reportCategories(req: Request, res: Response): Promise<Response> {
+  const data = await adminService.reportCategories(getQuery<ReportSalesQuery>(req));
+  return sendSuccess(res, data);
+}
+
 // GET /admin/products/:id/variants - varian + HPP (khusus admin)
 export async function productVariantsWithCost(req: Request, res: Response): Promise<Response> {
   const { id } = getParams<{ id: string }>(req);

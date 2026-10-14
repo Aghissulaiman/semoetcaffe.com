@@ -242,6 +242,195 @@ export async function countReportProducts(filters: ReportProductFilters, executo
   return Number(value ?? 0);
 }
 
+// --------------------------------------------------------------------------
+// Laporan lanjutan: deret harian, sebaran, dan rekap per kategori
+// --------------------------------------------------------------------------
+/** Deret harian: kotor, diskon, bersih, item terjual, modal (HPP), laba. */
+export async function reportDailyFinancials(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `WITH paid_orders AS (
+        SELECT o.id,
+               (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date AS business_date,
+               o.subtotal_idr,
+               o.discount_idr
+          FROM orders o
+         WHERE o.payment_status = 'paid'
+           AND o.order_status NOT IN ('cancelled','rejected')
+           AND ($1::uuid IS NULL OR o.branch_id = $1)
+           AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+           AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+     ),
+     order_fin AS (
+        SELECT business_date,
+               COUNT(*)::int AS order_count,
+               COALESCE(SUM(subtotal_idr), 0)::bigint AS gross_idr,
+               COALESCE(SUM(discount_idr), 0)::bigint AS discount_idr
+          FROM paid_orders
+         GROUP BY business_date
+     ),
+     item_fin AS (
+        SELECT (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date AS business_date,
+               COALESCE(SUM(oi.quantity), 0)::int AS items_sold,
+               COALESCE(SUM(oi.quantity * COALESCE(pv.cost_idr, 0)), 0)::bigint AS cogs_idr
+          FROM order_items oi
+          JOIN orders o ON o.id = oi.order_id
+          LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+         WHERE o.payment_status = 'paid'
+           AND o.order_status NOT IN ('cancelled','rejected')
+           AND oi.item_status <> 'cancelled'
+           AND ($1::uuid IS NULL OR o.branch_id = $1)
+           AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+           AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+         GROUP BY business_date
+     )
+     SELECT f.business_date,
+            f.order_count,
+            f.gross_idr,
+            f.discount_idr,
+            (f.gross_idr - f.discount_idr)::bigint AS net_idr,
+            COALESCE(i.items_sold, 0)::int AS items_sold,
+            COALESCE(i.cogs_idr, 0)::bigint AS cogs_idr,
+            (f.gross_idr - f.discount_idr - COALESCE(i.cogs_idr, 0))::bigint AS profit_idr
+       FROM order_fin f
+       LEFT JOIN item_fin i ON i.business_date = f.business_date
+      ORDER BY f.business_date`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Sebaran omzet berdasarkan metode pemenuhan (dine_in/pickup/delivery). */
+export async function reportFulfillmentBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT o.fulfillment_type AS key,
+            COUNT(*)::int AS order_count,
+            COALESCE(SUM(o.total_idr), 0)::bigint AS revenue_idr
+       FROM orders o
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+      GROUP BY o.fulfillment_type
+      ORDER BY revenue_idr DESC`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Sebaran omzet berdasarkan metode pembayaran (metode sukses terakhir per order). */
+export async function reportPaymentBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `WITH paid AS (
+        SELECT o.id,
+               o.total_idr,
+               (SELECT pt.payment_method
+                  FROM payment_transactions pt
+                 WHERE pt.order_id = o.id
+                   AND pt.status = 'succeeded'
+                   AND pt.transaction_type = 'charge'
+                   AND pt.payment_purpose = 'order'
+                 ORDER BY pt.paid_at DESC NULLS LAST, pt.created_at DESC
+                 LIMIT 1) AS method
+          FROM orders o
+         WHERE o.payment_status = 'paid'
+           AND o.order_status NOT IN ('cancelled','rejected')
+           AND ($1::uuid IS NULL OR o.branch_id = $1)
+           AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+           AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+     )
+     SELECT COALESCE(method, 'lainnya') AS key,
+            COUNT(*)::int AS order_count,
+            COALESCE(SUM(total_idr), 0)::bigint AS revenue_idr
+       FROM paid
+      GROUP BY 1
+      ORDER BY revenue_idr DESC`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Sebaran omzet per jam (0-23, zona Asia/Jakarta). */
+export async function reportHourlyBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT EXTRACT(HOUR FROM (o.placed_at AT TIME ZONE 'Asia/Jakarta'))::int AS key,
+            COUNT(*)::int AS order_count,
+            COALESCE(SUM(o.total_idr), 0)::bigint AS revenue_idr
+       FROM orders o
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+      GROUP BY 1
+      ORDER BY 1`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Sebaran omzet per hari dalam seminggu (0=Minggu .. 6=Sabtu). */
+export async function reportWeekdayBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT EXTRACT(DOW FROM (o.placed_at AT TIME ZONE 'Asia/Jakarta'))::int AS key,
+            COUNT(*)::int AS order_count,
+            COALESCE(SUM(o.total_idr), 0)::bigint AS revenue_idr
+       FROM orders o
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+      GROUP BY 1
+      ORDER BY 1`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Sebaran jumlah pesanan per status (semua pesanan, bukan hanya lunas). */
+export async function reportStatusBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT o.order_status AS key,
+            COUNT(*)::int AS order_count
+       FROM orders o
+      WHERE ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+      GROUP BY 1
+      ORDER BY order_count DESC`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Rekap penjualan per kategori produk beserta modal & laba. */
+export async function reportCategoryBreakdown(filters: ReportSalesFilters, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT COALESCE(pc.id::text, '') AS category_id,
+            COALESCE(pc.name, 'Tanpa Kategori') AS category_name,
+            COALESCE(SUM(oi.quantity), 0)::int AS quantity,
+            COUNT(DISTINCT oi.order_id)::int AS order_count,
+            COALESCE(SUM(oi.line_total_idr), 0)::bigint AS revenue_idr,
+            COALESCE(SUM(oi.quantity * COALESCE(pv.cost_idr, 0)), 0)::bigint AS cogs_idr
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN product_categories pc ON pc.id = p.category_id
+       LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND oi.item_status <> 'cancelled'
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+      GROUP BY pc.id, pc.name
+      ORDER BY revenue_idr DESC`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
 /** Ringkasan operasional untuk kartu dashboard. */
 export async function operationalSnapshot(executor: Exec = db) {
   return one<{

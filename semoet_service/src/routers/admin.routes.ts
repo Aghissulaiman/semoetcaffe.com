@@ -92,6 +92,39 @@ adminRouter.get(
   asyncHandler(adminController.reportProducts),
 );
 
+// GET /admin/reports/daily - deret harian (kotor, diskon, bersih, modal, laba, qty)
+adminRouter.get(
+  '/admin/reports/daily',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.ORDER, ACTIONS.READ),
+  readLimiter,
+  validate({ query: reportSalesQuerySchema }),
+  asyncHandler(adminController.reportDaily),
+);
+
+// GET /admin/reports/breakdown - sebaran metode pesanan/pembayaran, jam, hari, status
+adminRouter.get(
+  '/admin/reports/breakdown',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.ORDER, ACTIONS.READ),
+  readLimiter,
+  validate({ query: reportSalesQuerySchema }),
+  asyncHandler(adminController.reportBreakdown),
+);
+
+// GET /admin/reports/categories - rekap penjualan per kategori produk
+adminRouter.get(
+  '/admin/reports/categories',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.ORDER, ACTIONS.READ),
+  readLimiter,
+  validate({ query: reportSalesQuerySchema }),
+  asyncHandler(adminController.reportCategories),
+);
+
 // GET /admin/products/:id/variants - daftar varian beserta HPP (khusus admin)
 adminRouter.get(
   '/admin/products/:id/variants',

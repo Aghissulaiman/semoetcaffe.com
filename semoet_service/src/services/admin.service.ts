@@ -175,6 +175,15 @@ function pick(row: unknown, camelKey: string, snakeKey: string): unknown {
   return record[camelKey] ?? record[snakeKey];
 }
 
+/** Bentuk seragam satu baris sebaran (metode pesanan/pembayaran, jam, hari). */
+function shapeBreakdownItem(row: Record<string, unknown>) {
+  return {
+    key: str(pick(row, 'key', 'key')),
+    orderCount: num(pick(row, 'orderCount', 'order_count')),
+    revenueIdr: roundIdr(num(pick(row, 'revenueIdr', 'revenue_idr'))),
+  };
+}
+
 /**
  * Terjemahkan daftar 'resource:action' menjadi id permission. Key yang tidak
  * terdaftar ditolak supaya role tidak diam-diam punya permission tak berguna.
@@ -344,6 +353,73 @@ export async function reportProducts(query: ReportProductQuery): Promise<Paginat
 
   const pagination: Pagination = { page: paging.page, limit: paging.limit, offset: paging.offset, total };
   return { items, meta: buildPaginationMeta(pagination) };
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/reports/daily - deret harian (kotor, diskon, bersih, modal, laba, qty)
+// --------------------------------------------------------------------------
+export async function reportDaily(query: ReportSalesQuery) {
+  const filters = { branchId: query.branchId, from: query.from, to: query.to };
+  const rows = await adminRepo.reportDailyFinancials(filters);
+
+  return rows.map((row) => ({
+    businessDate: toDateOnly(pick(row, 'businessDate', 'business_date')),
+    orderCount: num(pick(row, 'orderCount', 'order_count')),
+    grossIdr: roundIdr(num(pick(row, 'grossIdr', 'gross_idr'))),
+    discountIdr: roundIdr(num(pick(row, 'discountIdr', 'discount_idr'))),
+    netIdr: roundIdr(num(pick(row, 'netIdr', 'net_idr'))),
+    itemsSold: num(pick(row, 'itemsSold', 'items_sold')),
+    cogsIdr: roundIdr(num(pick(row, 'cogsIdr', 'cogs_idr'))),
+    profitIdr: roundIdr(num(pick(row, 'profitIdr', 'profit_idr'))),
+  }));
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/reports/breakdown - sebaran metode pesanan/pembayaran, jam, hari, status
+// --------------------------------------------------------------------------
+export async function reportBreakdown(query: ReportSalesQuery) {
+  const filters = { branchId: query.branchId, from: query.from, to: query.to };
+
+  const [fulfillment, payment, hourly, weekday, status] = await Promise.all([
+    adminRepo.reportFulfillmentBreakdown(filters),
+    adminRepo.reportPaymentBreakdown(filters),
+    adminRepo.reportHourlyBreakdown(filters),
+    adminRepo.reportWeekdayBreakdown(filters),
+    adminRepo.reportStatusBreakdown(filters),
+  ]);
+
+  return {
+    fulfillment: fulfillment.map(shapeBreakdownItem),
+    payment: payment.map(shapeBreakdownItem),
+    hourly: hourly.map(shapeBreakdownItem),
+    weekday: weekday.map(shapeBreakdownItem),
+    status: status.map((row) => ({
+      orderStatus: str(pick(row, 'key', 'key')),
+      count: num(pick(row, 'orderCount', 'order_count')),
+    })),
+  };
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/reports/categories - rekap penjualan per kategori produk
+// --------------------------------------------------------------------------
+export async function reportCategories(query: ReportSalesQuery) {
+  const filters = { branchId: query.branchId, from: query.from, to: query.to };
+  const rows = await adminRepo.reportCategoryBreakdown(filters);
+
+  return rows.map((row) => {
+    const revenueIdr = roundIdr(num(pick(row, 'revenueIdr', 'revenue_idr')));
+    const cogsIdr = roundIdr(num(pick(row, 'cogsIdr', 'cogs_idr')));
+    return {
+      categoryId: str(pick(row, 'categoryId', 'category_id')),
+      categoryName: str(pick(row, 'categoryName', 'category_name')),
+      quantity: num(pick(row, 'quantity', 'quantity')),
+      orderCount: num(pick(row, 'orderCount', 'order_count')),
+      revenueIdr,
+      cogsIdr,
+      profitIdr: revenueIdr - cogsIdr,
+    };
+  });
 }
 
 // --------------------------------------------------------------------------
