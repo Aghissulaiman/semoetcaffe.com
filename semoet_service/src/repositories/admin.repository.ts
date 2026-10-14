@@ -12,12 +12,14 @@ export async function dailySales(
 ) {
   return many(
     executor,
-    `SELECT d.business_date, d.order_count, d.paid_sales_idr
+    `SELECT d.business_date,
+            COALESCE(SUM(d.order_count), 0)::int AS order_count,
+            COALESCE(SUM(d.paid_sales_idr), 0)::bigint AS paid_sales_idr
        FROM daily_order_sales d
-       LEFT JOIN branches b ON b.id = d.branch_id
       WHERE ($1::uuid IS NULL OR d.branch_id = $1)
         AND ($2::date IS NULL OR d.business_date >= $2::date)
         AND ($3::date IS NULL OR d.business_date <= $3::date)
+      GROUP BY d.business_date
       ORDER BY d.business_date DESC
       ${paginationSql(pagination)}`,
     [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
@@ -27,7 +29,7 @@ export async function dailySales(
 export async function countDailySales(filters: { branchId?: string; from?: string; to?: string }, executor: Exec = db) {
   const value = await scalar<number>(
     executor,
-    `SELECT COUNT(*)::int
+    `SELECT COUNT(DISTINCT d.business_date)::int
        FROM daily_order_sales d
       WHERE ($1::uuid IS NULL OR d.branch_id = $1)
         AND ($2::date IS NULL OR d.business_date >= $2::date)
@@ -50,7 +52,7 @@ export async function salesSummary(filters: { branchId?: string; from?: string; 
         COALESCE(SUM(d.paid_sales_idr), 0)::bigint AS total_paid_sales_idr,
         CASE WHEN COALESCE(SUM(d.order_count), 0) = 0 THEN 0
              ELSE (COALESCE(SUM(d.paid_sales_idr), 0) / SUM(d.order_count))::bigint END AS avg_order_value_idr,
-        COUNT(*)::int AS active_days
+        COUNT(DISTINCT d.business_date)::int AS active_days
        FROM daily_order_sales d
       WHERE ($1::uuid IS NULL OR d.branch_id = $1)
         AND ($2::date IS NULL OR d.business_date >= $2::date)
@@ -96,6 +98,148 @@ export async function topProducts(
       LIMIT $4`,
     [filters.branchId ?? null, filters.from ?? null, filters.to ?? null, filters.limit],
   );
+}
+
+// --------------------------------------------------------------------------
+// Laporan penjualan (akumulasi + rekap per produk)
+// --------------------------------------------------------------------------
+export interface ReportSalesFilters {
+  branchId?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface ReportProductFilters extends ReportSalesFilters {
+  q?: string;
+  sort: string;
+}
+
+/** Akumulasi nilai order (kotor, diskon, pajak, biaya, total) untuk order lunas. */
+export async function reportSalesSummary(filters: ReportSalesFilters, executor: Exec = db) {
+  return one<{
+    grossSalesIdr: number;
+    discountIdr: number;
+    taxIdr: number;
+    serviceFeeIdr: number;
+    deliveryFeeIdr: number;
+    totalBilledIdr: number;
+    orderCount: number;
+  }>(
+    executor,
+    `SELECT
+        COALESCE(SUM(o.subtotal_idr), 0)::bigint AS gross_sales_idr,
+        COALESCE(SUM(o.discount_idr), 0)::bigint AS discount_idr,
+        COALESCE(SUM(o.tax_idr), 0)::bigint AS tax_idr,
+        COALESCE(SUM(o.service_fee_idr), 0)::bigint AS service_fee_idr,
+        COALESCE(SUM(o.delivery_fee_idr), 0)::bigint AS delivery_fee_idr,
+        COALESCE(SUM(o.total_idr), 0)::bigint AS total_billed_idr,
+        COUNT(*)::int AS order_count
+       FROM orders o
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+/** Akumulasi item terjual + modal (HPP) dari resep harga varian. */
+export async function reportItemSummary(filters: ReportSalesFilters, executor: Exec = db) {
+  return one<{
+    itemsSold: number;
+    itemRevenueIdr: number;
+    cogsIdr: number;
+    productCount: number;
+  }>(
+    executor,
+    `SELECT
+        COALESCE(SUM(oi.quantity), 0)::int AS items_sold,
+        COALESCE(SUM(oi.line_total_idr), 0)::bigint AS item_revenue_idr,
+        COALESCE(SUM(oi.quantity * COALESCE(pv.cost_idr, 0)), 0)::bigint AS cogs_idr,
+        COUNT(DISTINCT oi.product_id)::int AS product_count
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND oi.item_status <> 'cancelled'
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)`,
+    [filters.branchId ?? null, filters.from ?? null, filters.to ?? null],
+  );
+}
+
+const REPORT_PRODUCT_SORTS: Record<string, string> = {
+  revenue_desc: 'revenue_idr DESC, product_name ASC',
+  profit_desc: 'profit_idr DESC, product_name ASC',
+  qty_desc: 'quantity DESC, product_name ASC',
+  name_asc: 'product_name ASC',
+};
+
+/** Rekap penjualan per produk (mendukung pencarian nama produk). */
+export async function reportProducts(
+  filters: ReportProductFilters,
+  pagination: Paging,
+  executor: Exec = db,
+) {
+  const orderBy = REPORT_PRODUCT_SORTS[filters.sort] ?? REPORT_PRODUCT_SORTS.revenue_desc;
+  return many(
+    executor,
+    `SELECT oi.product_id,
+            oi.product_name_snapshot AS product_name,
+            SUM(oi.quantity)::int AS quantity,
+            SUM(oi.line_total_idr)::bigint AS revenue_idr,
+            SUM(oi.quantity * COALESCE(pv.cost_idr, 0))::bigint AS cogs_idr,
+            (SUM(oi.line_total_idr) - SUM(oi.quantity * COALESCE(pv.cost_idr, 0)))::bigint AS profit_idr,
+            COUNT(DISTINCT oi.order_id)::int AS order_count
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+      WHERE o.payment_status = 'paid'
+        AND o.order_status NOT IN ('cancelled','rejected')
+        AND oi.item_status <> 'cancelled'
+        AND ($1::uuid IS NULL OR o.branch_id = $1)
+        AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+        AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+        AND ($4::text IS NULL OR oi.product_name_snapshot ILIKE '%' || $4 || '%')
+      GROUP BY oi.product_id, oi.product_name_snapshot
+      ORDER BY ${orderBy}
+      ${paginationSql(pagination)}`,
+    [
+      filters.branchId ?? null,
+      filters.from ?? null,
+      filters.to ?? null,
+      filters.q ?? null,
+    ],
+  );
+}
+
+export async function countReportProducts(filters: ReportProductFilters, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM (
+        SELECT oi.product_id, oi.product_name_snapshot
+          FROM order_items oi
+          JOIN orders o ON o.id = oi.order_id
+         WHERE o.payment_status = 'paid'
+           AND o.order_status NOT IN ('cancelled','rejected')
+           AND oi.item_status <> 'cancelled'
+           AND ($1::uuid IS NULL OR o.branch_id = $1)
+           AND ($2::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $2::date)
+           AND ($3::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $3::date)
+           AND ($4::text IS NULL OR oi.product_name_snapshot ILIKE '%' || $4 || '%')
+         GROUP BY oi.product_id, oi.product_name_snapshot
+     ) t`,
+    [
+      filters.branchId ?? null,
+      filters.from ?? null,
+      filters.to ?? null,
+      filters.q ?? null,
+    ],
+  );
+  return Number(value ?? 0);
 }
 
 /** Ringkasan operasional untuk kartu dashboard. */

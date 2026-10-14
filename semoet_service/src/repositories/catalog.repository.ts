@@ -345,6 +345,41 @@ export async function findVariantById(variantId: string, executor: Exec = db) {
   );
 }
 
+/** Varian beserta harga modal (HPP) — khusus panel admin, tidak diekspos ke katalog publik. */
+export async function listVariantsWithCost(productId: string, executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT id, product_id, sku, name, price_idr, cost_idr, compare_at_price_idr, sort_order, is_default, is_active
+       FROM product_variants
+      WHERE product_id = $1
+      ORDER BY sort_order ASC, price_idr ASC`,
+    [productId],
+  );
+}
+
+/** Perbarui HPP beberapa varian sekaligus (dibatasi ke produk tertentu). */
+export async function updateVariantCosts(
+  productId: string,
+  items: { variantId: string; costIdr: number }[],
+  executor: Exec = db,
+) {
+  if (items.length === 0) return [];
+  const variantIds = items.map((item) => item.variantId);
+  const costs = items.map((item) => item.costIdr);
+  return many(
+    executor,
+    `UPDATE product_variants pv
+        SET cost_idr = v.cost_idr,
+            updated_at = now()
+       FROM unnest($1::uuid[], $2::bigint[]) AS v(variant_id, cost_idr)
+      WHERE pv.id = v.variant_id
+        AND pv.product_id = $3
+      RETURNING pv.id, pv.product_id, pv.sku, pv.name, pv.price_idr, pv.cost_idr,
+                pv.compare_at_price_idr, pv.sort_order, pv.is_default, pv.is_active`,
+    [variantIds, costs, productId],
+  );
+}
+
 // --------------------------------------------------------------------------
 // Images (product_images)
 // --------------------------------------------------------------------------

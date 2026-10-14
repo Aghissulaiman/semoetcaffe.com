@@ -26,6 +26,40 @@ export const topProductQuerySchema = z.object({
 });
 
 // --------------------------------------------------------------------------
+// Laporan penjualan
+// --------------------------------------------------------------------------
+export const reportSalesQuerySchema = z.object({
+  from: dateSchema.optional(),
+  to: dateSchema.optional(),
+  branchId: uuidSchema.optional(),
+});
+
+export const reportProductQuerySchema = z.object({
+  from: dateSchema.optional(),
+  to: dateSchema.optional(),
+  branchId: uuidSchema.optional(),
+  q: z.string().trim().max(120).optional(),
+  sort: z.enum(['revenue_desc', 'profit_desc', 'qty_desc', 'name_asc']).default('revenue_desc'),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+// --------------------------------------------------------------------------
+// Harga modal (HPP) varian produk
+// --------------------------------------------------------------------------
+export const updateVariantCostsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        variantId: uuidSchema,
+        costIdr: z.coerce.number().int().min(0).max(1_000_000_000),
+      }),
+    )
+    .min(1, 'Minimal satu varian')
+    .max(50),
+});
+
+// --------------------------------------------------------------------------
 // Audit log
 // --------------------------------------------------------------------------
 export const auditLogQuerySchema = z.object({

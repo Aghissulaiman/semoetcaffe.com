@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound, unprocessable } from '../errors/AppErro
 import * as adminRepo from '../repositories/admin.repository.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import * as branchRepo from '../repositories/branch.repository.js';
+import * as catalogRepo from '../repositories/catalog.repository.js';
 import * as chatRepo from '../repositories/chat.repository.js';
 import * as inventoryRepo from '../repositories/inventory.repository.js';
 import * as momentRepo from '../repositories/moment.repository.js';
@@ -15,14 +16,17 @@ import {
   MAX_LIMIT,
   type Pagination,
 } from '../utils/pagination.js';
-import { iso, num, str, strOrNull } from '../utils/serialize.js';
+import { bool, iso, num, str, strOrNull } from '../utils/serialize.js';
 import {
   listPermissionQuerySchema,
   listRoleQuerySchema,
+  reportProductQuerySchema,
+  reportSalesQuerySchema,
   salesSummaryQuerySchema,
   topProductQuerySchema,
   updateRoleSchema,
   updateUserStatusSchema,
+  updateVariantCostsSchema,
   type AssignRoleInput,
   type AuditLogQuery,
   type CreateRoleInput,
@@ -33,6 +37,9 @@ import {
 /** Tipe query/input yang validator hanya mengekspor skema-nya. */
 export type SalesSummaryQuery = z.infer<typeof salesSummaryQuerySchema>;
 export type TopProductQuery = z.infer<typeof topProductQuerySchema>;
+export type ReportSalesQuery = z.infer<typeof reportSalesQuerySchema>;
+export type ReportProductQuery = z.infer<typeof reportProductQuerySchema>;
+export type UpdateVariantCostsInput = z.infer<typeof updateVariantCostsSchema>;
 export type ListRoleQuery = z.infer<typeof listRoleQuerySchema>;
 export type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
 export type ListPermissionQuery = z.infer<typeof listPermissionQuerySchema>;
@@ -136,6 +143,21 @@ function shapeAdminUser(row: Record<string, unknown>) {
     roleCodes,
     orderCount: num(row.orderCount),
     lifetimeValueIdr: roundIdr(num(row.lifetimeValueIdr)),
+  };
+}
+
+function shapeVariantCost(row: Record<string, unknown>) {
+  return {
+    id: str(row.id),
+    productId: str(row.productId),
+    sku: strOrNull(row.sku),
+    name: str(row.name),
+    priceIdr: roundIdr(num(row.priceIdr)),
+    costIdr: roundIdr(num(row.costIdr)),
+    compareAtPriceIdr: row.compareAtPriceIdr == null ? null : roundIdr(num(row.compareAtPriceIdr)),
+    sortOrder: num(row.sortOrder),
+    isDefault: bool(row.isDefault),
+    isActive: bool(row.isActive),
   };
 }
 
@@ -252,6 +274,146 @@ export async function topProducts(query: TopProductQuery) {
     totalQuantity: num(row.totalQuantity),
     totalRevenueIdr: roundIdr(num(row.totalRevenueIdr)),
   }));
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/reports/sales - akumulasi diskon, penjualan kotor/bersih, modal, laba, qty
+// --------------------------------------------------------------------------
+export async function reportSales(query: ReportSalesQuery) {
+  const filters = { branchId: query.branchId, from: query.from, to: query.to };
+
+  const [summary, items] = await Promise.all([
+    adminRepo.reportSalesSummary(filters),
+    adminRepo.reportItemSummary(filters),
+  ]);
+
+  const grossSalesIdr = roundIdr(num(pick(summary, 'grossSalesIdr', 'gross_sales_idr')));
+  const discountIdr = roundIdr(num(pick(summary, 'discountIdr', 'discount_idr')));
+  const netSalesIdr = Math.max(0, grossSalesIdr - discountIdr);
+  const cogsIdr = roundIdr(num(pick(items, 'cogsIdr', 'cogs_idr')));
+
+  return {
+    branchId: query.branchId ?? null,
+    from: query.from ?? null,
+    to: query.to ?? null,
+    grossSalesIdr,
+    discountIdr,
+    netSalesIdr,
+    taxIdr: roundIdr(num(pick(summary, 'taxIdr', 'tax_idr'))),
+    serviceFeeIdr: roundIdr(num(pick(summary, 'serviceFeeIdr', 'service_fee_idr'))),
+    deliveryFeeIdr: roundIdr(num(pick(summary, 'deliveryFeeIdr', 'delivery_fee_idr'))),
+    totalBilledIdr: roundIdr(num(pick(summary, 'totalBilledIdr', 'total_billed_idr'))),
+    cogsIdr,
+    profitIdr: netSalesIdr - cogsIdr,
+    itemsSold: num(pick(items, 'itemsSold', 'items_sold')),
+    itemRevenueIdr: roundIdr(num(pick(items, 'itemRevenueIdr', 'item_revenue_idr'))),
+    orderCount: num(pick(summary, 'orderCount', 'order_count')),
+    productCount: num(pick(items, 'productCount', 'product_count')),
+  };
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/reports/products - rekap penjualan per produk (dengan pencarian)
+// --------------------------------------------------------------------------
+export async function reportProducts(query: ReportProductQuery): Promise<Paginated<unknown>> {
+  const paging = parsePagination(query);
+  const filters = {
+    branchId: query.branchId,
+    from: query.from,
+    to: query.to,
+    q: query.q,
+    sort: query.sort,
+  };
+
+  const rows = await adminRepo.reportProducts(filters, paging);
+  const total = await adminRepo.countReportProducts(filters);
+
+  const items = rows.map((row) => {
+    const revenueIdr = roundIdr(num(pick(row, 'revenueIdr', 'revenue_idr')));
+    const cogsIdr = roundIdr(num(pick(row, 'cogsIdr', 'cogs_idr')));
+    return {
+      productId: str(pick(row, 'productId', 'product_id')),
+      productName: str(pick(row, 'productName', 'product_name')),
+      quantity: num(pick(row, 'quantity', 'quantity')),
+      orderCount: num(pick(row, 'orderCount', 'order_count')),
+      revenueIdr,
+      cogsIdr,
+      profitIdr: revenueIdr - cogsIdr,
+    };
+  });
+
+  const pagination: Pagination = { page: paging.page, limit: paging.limit, offset: paging.offset, total };
+  return { items, meta: buildPaginationMeta(pagination) };
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/products/:id/variants - varian + HPP (khusus admin)
+// --------------------------------------------------------------------------
+export async function listProductVariantsWithCost(productId: string) {
+  const product = await catalogRepo.findProductById(productId);
+  if (!product) throw notFound('Produk', productId);
+
+  const variants = await catalogRepo.listVariantsWithCost(productId);
+  return {
+    productId,
+    productName: str(product.name),
+    variants: variants.map(shapeVariantCost),
+  };
+}
+
+// --------------------------------------------------------------------------
+// PATCH /admin/products/:id/variant-costs - perbarui HPP varian
+// --------------------------------------------------------------------------
+export async function updateVariantCosts(
+  productId: string,
+  actorUserId: string,
+  input: UpdateVariantCostsInput,
+  audit: AuditContext = {},
+) {
+  // Gabungkan item duplikat: entri terakhir menang.
+  const byVariant = new Map<string, number>();
+  for (const item of input.items) byVariant.set(item.variantId, item.costIdr);
+  const items = [...byVariant.entries()].map(([variantId, costIdr]) => ({ variantId, costIdr }));
+
+  return withTransaction(async (tx) => {
+    const product = await catalogRepo.findProductById(productId, tx);
+    if (!product) throw notFound('Produk', productId);
+
+    const existing = await catalogRepo.listVariantsWithCost(productId, tx);
+    const knownIds = new Set(existing.map((row) => str(row.id)));
+    const unknown = items.filter((item) => !knownIds.has(item.variantId));
+    if (unknown.length > 0) {
+      throw unprocessable(
+        'Ada varian yang bukan milik produk ini',
+        unknown.map((item) => ({ field: 'items', message: `Varian ${item.variantId} tidak dikenal` })),
+      );
+    }
+
+    const oldCostById = new Map(existing.map((row) => [str(row.id), num(row.costIdr)]));
+    await catalogRepo.updateVariantCosts(productId, items, tx);
+
+    const updated = await catalogRepo.listVariantsWithCost(productId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.variant.cost.update',
+        entityType: 'product',
+        entityId: productId,
+        oldData: { costs: items.map((item) => ({ variantId: item.variantId, costIdr: oldCostById.get(item.variantId) ?? 0 })) },
+        newData: { costs: items },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return {
+      productId,
+      productName: str(product.name),
+      variants: updated.map(shapeVariantCost),
+    };
+  });
 }
 
 // --------------------------------------------------------------------------

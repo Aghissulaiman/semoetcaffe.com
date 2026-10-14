@@ -14,11 +14,14 @@ import {
   listAdminUserQuerySchema,
   listPermissionQuerySchema,
   listRoleQuerySchema,
+  reportProductQuerySchema,
+  reportSalesQuerySchema,
   salesDashboardQuerySchema,
   salesSummaryQuerySchema,
   topProductQuerySchema,
   updateRoleSchema,
   updateUserStatusSchema,
+  updateVariantCostsSchema,
   userIdParamSchema,
 } from '../validators/admin.validator.js';
 
@@ -65,6 +68,50 @@ adminRouter.get(
   requirePermission(RESOURCES.ORDER, ACTIONS.READ),
   readLimiter,
   asyncHandler(adminController.overview),
+);
+
+// GET /admin/reports/sales - akumulasi diskon, penjualan kotor/bersih, modal, laba, qty
+adminRouter.get(
+  '/admin/reports/sales',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.ORDER, ACTIONS.READ),
+  readLimiter,
+  validate({ query: reportSalesQuerySchema }),
+  asyncHandler(adminController.reportSales),
+);
+
+// GET /admin/reports/products - rekap penjualan per produk (bisa dicari)
+adminRouter.get(
+  '/admin/reports/products',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.ORDER, ACTIONS.READ),
+  readLimiter,
+  validate({ query: reportProductQuerySchema }),
+  asyncHandler(adminController.reportProducts),
+);
+
+// GET /admin/products/:id/variants - daftar varian beserta HPP (khusus admin)
+adminRouter.get(
+  '/admin/products/:id/variants',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.READ),
+  readLimiter,
+  validate({ params: uuidParamSchema }),
+  asyncHandler(adminController.productVariantsWithCost),
+);
+
+// PATCH /admin/products/:id/variant-costs - perbarui HPP tiap varian produk
+adminRouter.patch(
+  '/admin/products/:id/variant-costs',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: uuidParamSchema, body: updateVariantCostsSchema }),
+  asyncHandler(adminController.updateVariantCosts),
 );
 
 // GET /admin/audit-logs - jejak perubahan data sensitif (hanya baca)

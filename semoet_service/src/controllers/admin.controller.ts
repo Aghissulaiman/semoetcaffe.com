@@ -12,10 +12,13 @@ import type {
 import type {
   ListPermissionQuery,
   ListRoleQuery,
+  ReportProductQuery,
+  ReportSalesQuery,
   SalesSummaryQuery,
   TopProductQuery,
   UpdateRoleInput,
   UpdateUserStatusInput,
+  UpdateVariantCostsInput,
 } from '../services/admin.service.js';
 
 type AuditContext = adminService.AuditContext;
@@ -50,6 +53,37 @@ export async function topProducts(req: Request, res: Response): Promise<Response
 // GET /admin/dashboard/overview
 export async function overview(req: Request, res: Response): Promise<Response> {
   const data = await adminService.overview();
+  return sendSuccess(res, data);
+}
+
+// GET /admin/reports/sales - akumulasi diskon, kotor/bersih, modal, laba, qty
+export async function reportSales(req: Request, res: Response): Promise<Response> {
+  const data = await adminService.reportSales(getQuery<ReportSalesQuery>(req));
+  return sendSuccess(res, data);
+}
+
+// GET /admin/reports/products - rekap penjualan per produk (dengan pencarian)
+export async function reportProducts(req: Request, res: Response): Promise<Response> {
+  const result = await adminService.reportProducts(getQuery<ReportProductQuery>(req));
+  return sendPaginated(res, result.items, {
+    page: result.meta.page,
+    limit: result.meta.limit,
+    total: result.meta.total,
+  });
+}
+
+// GET /admin/products/:id/variants - varian + HPP (khusus admin)
+export async function productVariantsWithCost(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const data = await adminService.listProductVariantsWithCost(id);
+  return sendSuccess(res, data);
+}
+
+// PATCH /admin/products/:id/variant-costs - perbarui HPP varian
+export async function updateVariantCosts(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<UpdateVariantCostsInput>(req);
+  const data = await adminService.updateVariantCosts(id, getUserId(req), body, auditContext(req));
   return sendSuccess(res, data);
 }
 

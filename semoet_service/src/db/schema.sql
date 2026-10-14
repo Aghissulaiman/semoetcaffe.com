@@ -240,6 +240,7 @@ CREATE TABLE product_variants (
   sku text UNIQUE,
   name text NOT NULL DEFAULT 'Regular',
   price_idr bigint NOT NULL CHECK (price_idr >= 0),
+  cost_idr bigint NOT NULL DEFAULT 0 CHECK (cost_idr >= 0),
   compare_at_price_idr bigint CHECK (compare_at_price_idr IS NULL OR compare_at_price_idr >= price_idr),
   sort_order integer NOT NULL DEFAULT 0,
   is_default boolean NOT NULL DEFAULT false,
