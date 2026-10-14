@@ -1044,3 +1044,41 @@ export async function deleteVariant(variantId: string, executor: Exec = db) {
   );
   return Boolean(row);
 }
+
+// --------------------------------------------------------------------------
+// Gambar produk (product_images)
+// --------------------------------------------------------------------------
+export async function insertProductImage(
+  input: {
+    productId: string;
+    storageKey: string;
+    publicUrl: string | null;
+    altText: string | null;
+    isPrimary: boolean;
+  },
+  executor: Exec = db,
+) {
+  return one<{ id: string }>(
+    executor,
+    `INSERT INTO product_images
+       (product_id, storage_key, public_url, alt_text, sort_order, is_primary)
+     VALUES ($1,$2,$3,$4,
+             (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM product_images WHERE product_id = $1),
+             $5)
+     RETURNING id`,
+    [input.productId, input.storageKey, input.publicUrl, input.altText, input.isPrimary],
+  );
+}
+
+/** Ambil seluruh storage key gambar milik sebuah produk (untuk pembersihan). */
+export async function listProductImageKeys(productId: string, executor: Exec = db) {
+  return many<{ storageKey: string }>(
+    executor,
+    `SELECT storage_key FROM product_images WHERE product_id = $1`,
+    [productId],
+  );
+}
+
+export async function clearProductImages(productId: string, executor: Exec = db) {
+  await executor.query(`DELETE FROM product_images WHERE product_id = $1`, [productId]);
+}

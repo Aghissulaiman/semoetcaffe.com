@@ -182,6 +182,23 @@ export const productVariantInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
+// --------------------------------------------------------------------------
+// Unggah gambar (Supabase Storage)
+// --------------------------------------------------------------------------
+export const uploadImageSchema = z.object({
+  /** Isi berkas: base64 murni atau data URL (`data:image/png;base64,...`). */
+  data: z.string().min(1, 'Berkas gambar wajib diisi'),
+  contentType: z.string().trim().max(100).optional(),
+  folder: z.string().trim().max(60).optional(),
+});
+
+/** Field gambar opsional yang disematkan saat membuat/mengubah produk. */
+const productImageFields = {
+  imageStorageKey: z.string().trim().max(500).nullish(),
+  imagePublicUrl: z.string().trim().max(1000).nullish(),
+  imageAltText: z.string().trim().max(200).nullish(),
+};
+
 export const createProductSchema = z.object({
   name: z.string().trim().min(2, 'Nama produk minimal 2 karakter').max(160),
   slug: z
@@ -196,6 +213,7 @@ export const createProductSchema = z.object({
   isActive: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
   variants: z.array(productVariantInputSchema).min(1, 'Minimal satu varian').max(20),
+  ...productImageFields,
 });
 
 export const updateProductSchema = z
@@ -212,6 +230,7 @@ export const updateProductSchema = z
     descriptionShort: z.string().trim().max(2000).nullish(),
     isActive: z.boolean().optional(),
     isFeatured: z.boolean().optional(),
+    ...productImageFields,
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Tidak ada perubahan yang dikirim',

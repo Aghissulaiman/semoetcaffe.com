@@ -25,6 +25,7 @@ import type {
   UpdateUserStatusInput,
   UpdateVariantCostsInput,
   UpdateVariantInput,
+  UploadImageInput,
 } from '../services/admin.service.js';
 
 type AuditContext = adminService.AuditContext;
@@ -205,6 +206,13 @@ export async function deleteRole(req: Request, res: Response): Promise<Response>
   const { id } = getParams<{ id: string }>(req);
   const data = await adminService.deleteRole(id, getUserId(req), auditContext(req));
   return sendSuccess(res, data);
+}
+
+// POST /admin/uploads/images - unggah gambar ke object storage
+export async function uploadImage(req: Request, res: Response): Promise<Response> {
+  const body = getBody<UploadImageInput>(req);
+  const data = await adminService.uploadImage(getUserId(req), body, auditContext(req));
+  return sendCreated(res, data);
 }
 
 // POST /admin/products - tambah produk + varian

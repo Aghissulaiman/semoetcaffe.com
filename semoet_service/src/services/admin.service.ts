@@ -9,6 +9,7 @@ import * as catalogRepo from '../repositories/catalog.repository.js';
 import * as chatRepo from '../repositories/chat.repository.js';
 import * as inventoryRepo from '../repositories/inventory.repository.js';
 import * as momentRepo from '../repositories/moment.repository.js';
+import * as storageService from './storage.service.js';
 import { generateUniqueSlug } from '../utils/codeGenerator.js';
 import { roundIdr } from '../utils/money.js';
 import {
@@ -40,6 +41,7 @@ import {
   updateUserStatusSchema,
   updateVariantCostsSchema,
   updateVariantSchema,
+  uploadImageSchema,
   type AssignRoleInput,
   type AuditLogQuery,
   type CreateRoleInput,
@@ -63,6 +65,7 @@ export type CreateProductInput = z.infer<typeof createProductSchema>;
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 export type UpdateVariantInput = z.infer<typeof updateVariantSchema>;
 export type ProductVariantInput = z.infer<typeof productVariantInputSchema>;
+export type UploadImageInput = z.infer<typeof uploadImageSchema>;
 
 /** Konteks audit yang diteruskan dari controller. */
 export interface AuditContext {
@@ -181,7 +184,12 @@ function shapeVariantCost(row: Record<string, unknown>) {
 }
 
 /** Bentuk produk untuk panel admin: field katalog + seluruh varian (termasuk HPP). */
-function shapeAdminProduct(row: Record<string, unknown>, variants: Record<string, unknown>[]) {
+function shapeAdminProduct(
+  row: Record<string, unknown>,
+  variants: Record<string, unknown>[],
+  images: Record<string, unknown>[] = [],
+) {
+  const primary = images.find((image) => bool(image.isPrimary)) ?? images[0] ?? null;
   return {
     id: str(row.id),
     name: str(row.name),
@@ -192,6 +200,17 @@ function shapeAdminProduct(row: Record<string, unknown>, variants: Record<string
     description: strOrNull(row.description),
     isActive: bool(row.isActive),
     isFeatured: bool(row.isFeatured),
+    imageUrl: primary ? strOrNull(primary.publicUrl) : null,
+    imageStorageKey: primary ? strOrNull(primary.storageKey) : null,
+    imageAltText: primary ? strOrNull(primary.altText) : null,
+    images: images.map((image) => ({
+      id: str(image.id),
+      url: strOrNull(image.publicUrl),
+      storageKey: strOrNull(image.storageKey),
+      altText: strOrNull(image.altText),
+      sortOrder: num(image.sortOrder),
+      isPrimary: bool(image.isPrimary),
+    })),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     variants: variants.map(shapeVariantCost),
@@ -1093,8 +1112,84 @@ async function ensureSingleDefaultVariant(productId: string, tx: TransactionClie
 async function loadAdminProduct(productId: string, tx: TransactionClient) {
   const product = await catalogRepo.findProductById(productId, tx);
   if (!product) throw notFound('Produk', productId);
-  const variants = await catalogRepo.listVariantsWithCost(productId, tx);
-  return shapeAdminProduct(product, variants);
+  const [variants, images] = await Promise.all([
+    catalogRepo.listVariantsWithCost(productId, tx),
+    catalogRepo.listProductImages(productId, tx),
+  ]);
+  return shapeAdminProduct(product, variants, images);
+}
+
+// --------------------------------------------------------------------------
+// Gambar produk: normalisasi payload & helper penyimpanan
+// --------------------------------------------------------------------------
+type ProductImageMutation =
+  | { kind: 'none' }
+  | { kind: 'remove' }
+  | { kind: 'set'; storageKey: string; publicUrl: string; altText: string | null };
+
+/**
+ * Terjemahkan field gambar pada body create/update menjadi aksi:
+ * - tidak ada field  -> tidak mengubah apa pun
+ * - null/kosong      -> hapus gambar
+ * - key + url        -> pasang gambar baru (menggantikan yang lama)
+ */
+function resolveImageMutation(input: {
+  imageStorageKey?: string | null;
+  imagePublicUrl?: string | null;
+  imageAltText?: string | null;
+}): ProductImageMutation {
+  const keyProvided = input.imageStorageKey !== undefined;
+  const urlProvided = input.imagePublicUrl !== undefined;
+  if (!keyProvided && !urlProvided) return { kind: 'none' };
+
+  const storageKey = keyProvided ? input.imageStorageKey?.trim() || null : null;
+  const publicUrl = urlProvided ? input.imagePublicUrl?.trim() || null : null;
+
+  if (storageKey === null && publicUrl === null) return { kind: 'remove' };
+  if (!storageKey || !publicUrl) {
+    throw badRequest('Data gambar tidak lengkap: storageKey dan publicUrl wajib dikirim bersamaan');
+  }
+  return { kind: 'set', storageKey, publicUrl, altText: input.imageAltText?.trim() || null };
+}
+
+async function attachPrimaryImage(
+  productId: string,
+  image: { storageKey: string; publicUrl: string; altText: string | null },
+  tx: TransactionClient,
+) {
+  await adminRepo.insertProductImage(
+    {
+      productId,
+      storageKey: image.storageKey,
+      publicUrl: image.publicUrl,
+      altText: image.altText,
+      isPrimary: true,
+    },
+    tx,
+  );
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/uploads/images - unggah gambar ke object storage
+// --------------------------------------------------------------------------
+export async function uploadImage(actorUserId: string, input: UploadImageInput, audit: AuditContext = {}) {
+  const uploaded = await storageService.uploadImage({
+    data: input.data,
+    contentType: input.contentType,
+    folder: input.folder ?? 'products',
+  });
+
+  await adminRepo.insertAuditLog({
+    actorUserId,
+    action: 'admin.upload.image',
+    entityType: 'storage',
+    entityId: null,
+    newData: { storageKey: uploaded.storageKey, sizeBytes: uploaded.sizeBytes, contentType: uploaded.contentType },
+    requestId: audit.requestId ?? null,
+    ipAddress: audit.ipAddress ?? null,
+  });
+
+  return uploaded;
 }
 
 function assertCompareAtPrice(priceIdr: number, compareAtPriceIdr: number | null | undefined) {
@@ -1178,13 +1273,25 @@ export async function createProduct(
       );
     }
 
+    // Gambar utama (opsional) — unggahan sudah dilakukan lewat /admin/uploads/images.
+    const image = resolveImageMutation(input);
+    if (image.kind === 'set') {
+      await attachPrimaryImage(productId, image, tx);
+    }
+
     await adminRepo.insertAuditLog(
       {
         actorUserId,
         action: 'admin.product.create',
         entityType: 'product',
         entityId: productId,
-        newData: { name, slug, categoryId: input.categoryId, variantCount: input.variants.length },
+        newData: {
+          name,
+          slug,
+          categoryId: input.categoryId,
+          variantCount: input.variants.length,
+          imageUrl: image.kind === 'set' ? image.publicUrl : null,
+        },
         requestId: audit.requestId ?? null,
         ipAddress: audit.ipAddress ?? null,
       },
@@ -1204,7 +1311,10 @@ export async function updateProduct(
   input: UpdateProductInput,
   audit: AuditContext = {},
 ) {
-  return withTransaction(async (tx) => {
+  const image = resolveImageMutation(input);
+  const orphanedKeys: string[] = [];
+
+  const result = await withTransaction(async (tx) => {
     const current = await catalogRepo.findProductById(productId, tx);
     if (!current) throw notFound('Produk', productId);
 
@@ -1228,8 +1338,23 @@ export async function updateProduct(
       data.slug = slug;
     }
 
-    const updated = await adminRepo.updateProduct(productId, data, tx);
-    if (!updated) throw notFound('Produk', productId);
+    if (Object.keys(data).length > 0) {
+      const updated = await adminRepo.updateProduct(productId, data, tx);
+      if (!updated) throw notFound('Produk', productId);
+    }
+
+    // Ganti / hapus gambar utama bila diminta.
+    if (image.kind !== 'none') {
+      const existing = await adminRepo.listProductImageKeys(productId, tx);
+      await adminRepo.clearProductImages(productId, tx);
+      for (const row of existing) {
+        const key = str(row.storageKey);
+        if (image.kind === 'remove' || key !== image.storageKey) orphanedKeys.push(key);
+      }
+      if (image.kind === 'set') {
+        await attachPrimaryImage(productId, image, tx);
+      }
+    }
 
     await adminRepo.insertAuditLog(
       {
@@ -1238,7 +1363,7 @@ export async function updateProduct(
         entityType: 'product',
         entityId: productId,
         oldData: { name: str(current.name), isActive: bool(current.isActive), isFeatured: bool(current.isFeatured) },
-        newData: data,
+        newData: { ...data, image: image.kind === 'none' ? undefined : image },
         requestId: audit.requestId ?? null,
         ipAddress: audit.ipAddress ?? null,
       },
@@ -1247,6 +1372,13 @@ export async function updateProduct(
 
     return loadAdminProduct(productId, tx);
   });
+
+  // Bersihkan objek lama dari storage setelah transaksi sukses (best effort).
+  for (const key of orphanedKeys) {
+    void storageService.deleteImage(key);
+  }
+
+  return result;
 }
 
 // --------------------------------------------------------------------------

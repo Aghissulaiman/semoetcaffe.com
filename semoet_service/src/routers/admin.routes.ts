@@ -30,6 +30,7 @@ import {
   updateUserStatusSchema,
   updateVariantCostsSchema,
   updateVariantSchema,
+  uploadImageSchema,
   userIdParamSchema,
 } from '../validators/admin.validator.js';
 
@@ -303,6 +304,17 @@ adminRouter.delete(
 // --------------------------------------------------------------------------
 // CRUD produk & varian
 // --------------------------------------------------------------------------
+// POST /admin/uploads/images - unggah gambar produk ke object storage (Supabase)
+adminRouter.post(
+  '/admin/uploads/images',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.CREATE),
+  writeLimiter,
+  validate({ body: uploadImageSchema }),
+  asyncHandler(adminController.uploadImage),
+);
+
 // POST /admin/products - tambah produk beserta varian awalnya
 adminRouter.post(
   '/admin/products',
