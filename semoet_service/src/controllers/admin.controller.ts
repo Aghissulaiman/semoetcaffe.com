@@ -10,15 +10,21 @@ import type {
   SalesDashboardQuery,
 } from '../validators/admin.validator.js';
 import type {
+  CreateProductInput,
+  CreateUserInput,
   ListPermissionQuery,
   ListRoleQuery,
+  ProductVariantInput,
   ReportProductQuery,
   ReportSalesQuery,
   SalesSummaryQuery,
   TopProductQuery,
+  UpdateProductInput,
   UpdateRoleInput,
+  UpdateUserInput,
   UpdateUserStatusInput,
   UpdateVariantCostsInput,
+  UpdateVariantInput,
 } from '../services/admin.service.js';
 
 type AuditContext = adminService.AuditContext;
@@ -169,5 +175,85 @@ export async function updateUserStatus(req: Request, res: Response): Promise<Res
   const { id } = getParams<{ id: string }>(req);
   const body = getBody<UpdateUserStatusInput>(req);
   const data = await adminService.updateUserStatus(id, getUserId(req), body, auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// POST /admin/users - tambah anggota
+export async function createUser(req: Request, res: Response): Promise<Response> {
+  const body = getBody<CreateUserInput>(req);
+  const data = await adminService.createUser(getUserId(req), body, auditContext(req));
+  return sendCreated(res, data);
+}
+
+// PATCH /admin/users/:id - ubah profil anggota
+export async function updateUser(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<UpdateUserInput>(req);
+  const data = await adminService.updateUserProfile(id, getUserId(req), body, auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// GET /admin/roles/:id - detail role + izin
+export async function getRole(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const data = await adminService.getRole(id);
+  return sendSuccess(res, data);
+}
+
+// DELETE /admin/roles/:id - hapus role
+export async function deleteRole(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const data = await adminService.deleteRole(id, getUserId(req), auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// POST /admin/products - tambah produk + varian
+export async function createProduct(req: Request, res: Response): Promise<Response> {
+  const body = getBody<CreateProductInput>(req);
+  const data = await adminService.createProduct(getUserId(req), body, auditContext(req));
+  return sendCreated(res, data);
+}
+
+// PATCH /admin/products/:id - ubah produk
+export async function updateProduct(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<UpdateProductInput>(req);
+  const data = await adminService.updateProduct(id, getUserId(req), body, auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// DELETE /admin/products/:id - soft delete produk
+export async function deleteProduct(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const data = await adminService.deleteProduct(id, getUserId(req), auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// POST /admin/products/:id/variants - tambah varian
+export async function createVariant(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<ProductVariantInput>(req);
+  const data = await adminService.createVariant(id, getUserId(req), body, auditContext(req));
+  return sendCreated(res, data);
+}
+
+// PATCH /admin/products/:id/variants/:variantId - ubah varian
+export async function updateProductVariant(req: Request, res: Response): Promise<Response> {
+  const { id, variantId } = getParams<{ id: string; variantId: string }>(req);
+  const body = getBody<UpdateVariantInput>(req);
+  const data = await adminService.updateProductVariant(
+    id,
+    variantId,
+    getUserId(req),
+    body,
+    auditContext(req),
+  );
+  return sendSuccess(res, data);
+}
+
+// DELETE /admin/products/:id/variants/:variantId - hapus varian
+export async function deleteVariant(req: Request, res: Response): Promise<Response> {
+  const { id, variantId } = getParams<{ id: string; variantId: string }>(req);
+  const data = await adminService.deleteVariant(id, variantId, getUserId(req), auditContext(req));
   return sendSuccess(res, data);
 }

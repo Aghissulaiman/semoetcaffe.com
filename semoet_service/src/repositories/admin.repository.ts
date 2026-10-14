@@ -721,6 +721,8 @@ export interface ListAdminUserFilters {
   status?: string;
   roleCode?: string;
   q?: string;
+  /** Sertakan anggota yang sudah dihapus (soft delete) — untuk memulihkan. */
+  includeDeleted?: boolean;
 }
 
 export async function listUsers(filters: ListAdminUserFilters, pagination: Paging, executor: Exec = db) {
@@ -728,6 +730,7 @@ export async function listUsers(filters: ListAdminUserFilters, pagination: Pagin
     executor,
     `SELECT u.id, u.email, u.phone_e164, u.display_name, u.status,
               u.email_verified_at, u.phone_verified_at, u.last_login_at, u.created_at,
+              u.deleted_at,
               COALESCE(roles.role_codes, ARRAY[]::text[]) AS role_codes,
               (SELECT COUNT(*)::int FROM orders o WHERE o.user_id = u.id) AS order_count,
               (SELECT COALESCE(SUM(o.total_idr), 0)::bigint FROM orders o
@@ -746,10 +749,10 @@ export async function listUsers(filters: ListAdminUserFilters, pagination: Pagin
           AND ($3::text IS NULL OR u.display_name ILIKE '%' || $3 || '%'
                                  OR u.email ILIKE '%' || $3 || '%'
                                  OR u.phone_e164 ILIKE '%' || $3 || '%')
-          AND u.deleted_at IS NULL
+          AND ($4::boolean IS TRUE OR u.deleted_at IS NULL)
         ORDER BY u.created_at DESC
         ${paginationSql(pagination)}`,
-    [filters.status ?? null, filters.roleCode ?? null, filters.q ?? null],
+    [filters.status ?? null, filters.roleCode ?? null, filters.q ?? null, filters.includeDeleted ?? false],
   );
 }
 
@@ -765,8 +768,8 @@ export async function countUsers(filters: ListAdminUserFilters, executor: Exec =
         AND ($3::text IS NULL OR u.display_name ILIKE '%' || $3 || '%'
                                OR u.email ILIKE '%' || $3 || '%'
                                OR u.phone_e164 ILIKE '%' || $3 || '%')
-        AND u.deleted_at IS NULL`,
-    [filters.status ?? null, filters.roleCode ?? null, filters.q ?? null],
+        AND ($4::boolean IS TRUE OR u.deleted_at IS NULL)`,
+    [filters.status ?? null, filters.roleCode ?? null, filters.q ?? null, filters.includeDeleted ?? false],
   );
   return Number(value ?? 0);
 }
@@ -776,7 +779,6 @@ export async function updateUserStatus(
   status: string,
   executor: Exec = db,
 ) {
-  const deletedAt = status === 'deleted' ? new Date() : null;
   return one(
     executor,
     `UPDATE users
@@ -785,7 +787,7 @@ export async function updateUserStatus(
             updated_at = now()
       WHERE id = $1
       RETURNING id, status, deleted_at`,
-    [userId, status, deletedAt],
+    [userId, status],
   );
 }
 
@@ -793,3 +795,252 @@ export async function updateUserStatus(
 export const FULL_PERMISSION_MATRIX = Object.values(RESOURCES).flatMap((resource) =>
   Object.values(ACTIONS).map((action) => `${resource}:${action}`),
 );
+
+// --------------------------------------------------------------------------
+// CRUD user (anggota)
+// --------------------------------------------------------------------------
+export async function emailTakenByOther(email: string, userId: string, executor: Exec = db) {
+  const value = await scalar<boolean>(
+    executor,
+    `SELECT EXISTS (SELECT 1 FROM users WHERE email = $1 AND id <> $2)`,
+    [email, userId],
+  );
+  return Boolean(value);
+}
+
+export async function phoneTakenByOther(phoneE164: string, userId: string, executor: Exec = db) {
+  const value = await scalar<boolean>(
+    executor,
+    `SELECT EXISTS (SELECT 1 FROM users WHERE phone_e164 = $1 AND id <> $2)`,
+    [phoneE164, userId],
+  );
+  return Boolean(value);
+}
+
+export async function updateUserProfile(
+  userId: string,
+  data: Record<string, unknown>,
+  executor: Exec = db,
+) {
+  const columns = Object.keys(data);
+  if (columns.length === 0) return findUserById(userId, executor);
+  const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+  return one(
+    executor,
+    `UPDATE users SET ${assignments}, updated_at = now()
+      WHERE id = $1
+      RETURNING id, email, phone_e164, display_name, status, deleted_at, created_at`,
+    [userId, ...Object.values(data)],
+  );
+}
+
+// --------------------------------------------------------------------------
+// CRUD role (hapus)
+// --------------------------------------------------------------------------
+export async function countRoleUsers(roleId: string, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM user_roles WHERE role_id = $1`,
+    [roleId],
+  );
+  return Number(value ?? 0);
+}
+
+export async function deleteRole(roleId: string, executor: Exec = db) {
+  const row = await one<{ id: string }>(
+    executor,
+    `DELETE FROM roles WHERE id = $1 RETURNING id`,
+    [roleId],
+  );
+  return Boolean(row);
+}
+
+// --------------------------------------------------------------------------
+// CRUD produk
+// --------------------------------------------------------------------------
+export async function productSlugExists(
+  slug: string,
+  exceptProductId: string | null = null,
+  executor: Exec = db,
+) {
+  const value = await scalar<boolean>(
+    executor,
+    `SELECT EXISTS (
+       SELECT 1 FROM products
+        WHERE slug = $1 AND ($2::uuid IS NULL OR id <> $2)
+     )`,
+    [slug, exceptProductId],
+  );
+  return Boolean(value);
+}
+
+export async function insertProduct(
+  input: {
+    categoryId: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    productKind: string;
+    isActive: boolean;
+    isFeatured: boolean;
+  },
+  executor: Exec = db,
+) {
+  return one<{ id: string }>(
+    executor,
+    `INSERT INTO products (category_id, name, slug, description, product_kind, is_active, is_featured)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     RETURNING id`,
+    [
+      input.categoryId,
+      input.name,
+      input.slug,
+      input.description,
+      input.productKind,
+      input.isActive,
+      input.isFeatured,
+    ],
+  );
+}
+
+export async function updateProduct(
+  productId: string,
+  data: Record<string, unknown>,
+  executor: Exec = db,
+) {
+  const columns = Object.keys(data);
+  if (columns.length === 0) return null;
+  const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+  return one<{ id: string }>(
+    executor,
+    `UPDATE products SET ${assignments}, updated_at = now()
+      WHERE id = $1 AND deleted_at IS NULL
+      RETURNING id`,
+    [productId, ...Object.values(data)],
+  );
+}
+
+/** Soft delete produk (riwayat pesanan tetap utuh). */
+export async function softDeleteProduct(productId: string, executor: Exec = db) {
+  return one<{ id: string }>(
+    executor,
+    `UPDATE products SET deleted_at = now(), is_active = false, updated_at = now()
+      WHERE id = $1 AND deleted_at IS NULL
+      RETURNING id`,
+    [productId],
+  );
+}
+
+// --------------------------------------------------------------------------
+// CRUD varian produk
+// --------------------------------------------------------------------------
+export async function variantSkuExists(
+  sku: string,
+  exceptVariantId: string | null = null,
+  executor: Exec = db,
+) {
+  const value = await scalar<boolean>(
+    executor,
+    `SELECT EXISTS (
+       SELECT 1 FROM product_variants
+        WHERE sku = $1 AND ($2::uuid IS NULL OR id <> $2)
+     )`,
+    [sku, exceptVariantId],
+  );
+  return Boolean(value);
+}
+
+export async function countVariants(productId: string, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM product_variants WHERE product_id = $1`,
+    [productId],
+  );
+  return Number(value ?? 0);
+}
+
+export async function findVariantForProduct(
+  variantId: string,
+  productId: string,
+  executor: Exec = db,
+) {
+  return one<{ id: string; isDefault: boolean }>(
+    executor,
+    `SELECT id, is_default AS "isDefault"
+       FROM product_variants
+      WHERE id = $1 AND product_id = $2`,
+    [variantId, productId],
+  );
+}
+
+export async function clearDefaultVariant(
+  productId: string,
+  exceptVariantId: string | null,
+  executor: Exec = db,
+) {
+  await executor.query(
+    `UPDATE product_variants SET is_default = false, updated_at = now()
+      WHERE product_id = $1 AND is_default = true AND ($2::uuid IS NULL OR id <> $2)`,
+    [productId, exceptVariantId],
+  );
+}
+
+export async function insertVariant(
+  input: {
+    productId: string;
+    sku: string | null;
+    name: string;
+    priceIdr: number;
+    costIdr: number;
+    compareAtPriceIdr: number | null;
+    isDefault: boolean;
+    isActive: boolean;
+  },
+  executor: Exec = db,
+) {
+  return one<{ id: string }>(
+    executor,
+    `INSERT INTO product_variants
+       (product_id, sku, name, price_idr, cost_idr, compare_at_price_idr, sort_order, is_default, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,
+             (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM product_variants WHERE product_id = $1),
+             $7,$8)
+     RETURNING id`,
+    [
+      input.productId,
+      input.sku,
+      input.name,
+      input.priceIdr,
+      input.costIdr,
+      input.compareAtPriceIdr,
+      input.isDefault,
+      input.isActive,
+    ],
+  );
+}
+
+export async function updateVariant(
+  variantId: string,
+  data: Record<string, unknown>,
+  executor: Exec = db,
+) {
+  const columns = Object.keys(data);
+  if (columns.length === 0) return null;
+  const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+  return one<{ id: string }>(
+    executor,
+    `UPDATE product_variants SET ${assignments}, updated_at = now()
+      WHERE id = $1
+      RETURNING id`,
+    [variantId, ...Object.values(data)],
+  );
+}
+
+export async function deleteVariant(variantId: string, executor: Exec = db) {
+  const row = await one<{ id: string }>(
+    executor,
+    `DELETE FROM product_variants WHERE id = $1 RETURNING id`,
+    [variantId],
+  );
+  return Boolean(row);
+}

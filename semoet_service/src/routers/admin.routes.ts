@@ -10,18 +10,26 @@ import { uuidParamSchema } from '../validators/common.validator.js';
 import {
   assignRoleSchema,
   auditLogQuerySchema,
+  createProductSchema,
   createRoleSchema,
+  createUserSchema,
   listAdminUserQuerySchema,
   listPermissionQuerySchema,
   listRoleQuerySchema,
+  productIdParamSchema,
+  productVariantInputSchema,
+  productVariantParamSchema,
   reportProductQuerySchema,
   reportSalesQuerySchema,
   salesDashboardQuerySchema,
   salesSummaryQuerySchema,
   topProductQuerySchema,
+  updateProductSchema,
   updateRoleSchema,
+  updateUserSchema,
   updateUserStatusSchema,
   updateVariantCostsSchema,
+  updateVariantSchema,
   userIdParamSchema,
 } from '../validators/admin.validator.js';
 
@@ -237,4 +245,126 @@ adminRouter.patch(
   writeLimiter,
   validate({ params: userIdParamSchema, body: updateUserStatusSchema }),
   asyncHandler(adminController.updateUserStatus),
+);
+
+// --------------------------------------------------------------------------
+// CRUD anggota (user)
+// --------------------------------------------------------------------------
+// POST /admin/users - tambah anggota baru (email/telepon + password + role)
+adminRouter.post(
+  '/admin/users',
+  authenticate,
+  requireStaff,
+  requireAdmin,
+  requirePermission(RESOURCES.USER, ACTIONS.CREATE),
+  writeLimiter,
+  validate({ body: createUserSchema }),
+  asyncHandler(adminController.createUser),
+);
+
+// PATCH /admin/users/:id - ubah profil anggota (nama, email, telepon)
+adminRouter.patch(
+  '/admin/users/:id',
+  authenticate,
+  requireStaff,
+  requireAdmin,
+  requirePermission(RESOURCES.USER, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: userIdParamSchema, body: updateUserSchema }),
+  asyncHandler(adminController.updateUser),
+);
+
+// --------------------------------------------------------------------------
+// CRUD role (peran)
+// --------------------------------------------------------------------------
+// GET /admin/roles/:id - detail role + daftar izin (untuk form edit)
+adminRouter.get(
+  '/admin/roles/:id',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.USER, ACTIONS.READ),
+  readLimiter,
+  validate({ params: uuidParamSchema }),
+  asyncHandler(adminController.getRole),
+);
+
+// DELETE /admin/roles/:id - hapus role non-sistem yang belum dipakai anggota
+adminRouter.delete(
+  '/admin/roles/:id',
+  authenticate,
+  requireStaff,
+  requireAdmin,
+  requirePermission(RESOURCES.USER, ACTIONS.DELETE),
+  writeLimiter,
+  validate({ params: uuidParamSchema }),
+  asyncHandler(adminController.deleteRole),
+);
+
+// --------------------------------------------------------------------------
+// CRUD produk & varian
+// --------------------------------------------------------------------------
+// POST /admin/products - tambah produk beserta varian awalnya
+adminRouter.post(
+  '/admin/products',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.CREATE),
+  writeLimiter,
+  validate({ body: createProductSchema }),
+  asyncHandler(adminController.createProduct),
+);
+
+// PATCH /admin/products/:id - ubah data produk (nama, kategori, jenis, aktif, unggulan)
+adminRouter.patch(
+  '/admin/products/:id',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: productIdParamSchema, body: updateProductSchema }),
+  asyncHandler(adminController.updateProduct),
+);
+
+// DELETE /admin/products/:id - hapus produk (soft delete, riwayat pesanan aman)
+adminRouter.delete(
+  '/admin/products/:id',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.DELETE),
+  writeLimiter,
+  validate({ params: productIdParamSchema }),
+  asyncHandler(adminController.deleteProduct),
+);
+
+// POST /admin/products/:id/variants - tambah varian baru
+adminRouter.post(
+  '/admin/products/:id/variants',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: productIdParamSchema, body: productVariantInputSchema }),
+  asyncHandler(adminController.createVariant),
+);
+
+// PATCH /admin/products/:id/variants/:variantId - ubah varian
+adminRouter.patch(
+  '/admin/products/:id/variants/:variantId',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: productVariantParamSchema, body: updateVariantSchema }),
+  asyncHandler(adminController.updateProductVariant),
+);
+
+// DELETE /admin/products/:id/variants/:variantId - hapus varian (sisakan minimal satu)
+adminRouter.delete(
+  '/admin/products/:id/variants/:variantId',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: productVariantParamSchema }),
+  asyncHandler(adminController.deleteVariant),
 );

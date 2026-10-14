@@ -9,7 +9,14 @@ import * as catalogRepo from '../repositories/catalog.repository.js';
 import * as chatRepo from '../repositories/chat.repository.js';
 import * as inventoryRepo from '../repositories/inventory.repository.js';
 import * as momentRepo from '../repositories/moment.repository.js';
+import { generateUniqueSlug } from '../utils/codeGenerator.js';
 import { roundIdr } from '../utils/money.js';
+import {
+  assertPasswordStrength,
+  hashPassword,
+  normalizeEmail,
+  normalizePhone,
+} from '../utils/password.js';
 import {
   buildPaginationMeta,
   parsePagination,
@@ -18,15 +25,21 @@ import {
 } from '../utils/pagination.js';
 import { bool, iso, num, str, strOrNull } from '../utils/serialize.js';
 import {
+  createProductSchema,
+  createUserSchema,
   listPermissionQuerySchema,
   listRoleQuerySchema,
+  productVariantInputSchema,
   reportProductQuerySchema,
   reportSalesQuerySchema,
   salesSummaryQuerySchema,
   topProductQuerySchema,
+  updateProductSchema,
   updateRoleSchema,
+  updateUserSchema,
   updateUserStatusSchema,
   updateVariantCostsSchema,
+  updateVariantSchema,
   type AssignRoleInput,
   type AuditLogQuery,
   type CreateRoleInput,
@@ -44,6 +57,12 @@ export type ListRoleQuery = z.infer<typeof listRoleQuerySchema>;
 export type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
 export type ListPermissionQuery = z.infer<typeof listPermissionQuerySchema>;
 export type UpdateUserStatusInput = z.infer<typeof updateUserStatusSchema>;
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type CreateProductInput = z.infer<typeof createProductSchema>;
+export type UpdateProductInput = z.infer<typeof updateProductSchema>;
+export type UpdateVariantInput = z.infer<typeof updateVariantSchema>;
+export type ProductVariantInput = z.infer<typeof productVariantInputSchema>;
 
 /** Konteks audit yang diteruskan dari controller. */
 export interface AuditContext {
@@ -158,6 +177,24 @@ function shapeVariantCost(row: Record<string, unknown>) {
     sortOrder: num(row.sortOrder),
     isDefault: bool(row.isDefault),
     isActive: bool(row.isActive),
+  };
+}
+
+/** Bentuk produk untuk panel admin: field katalog + seluruh varian (termasuk HPP). */
+function shapeAdminProduct(row: Record<string, unknown>, variants: Record<string, unknown>[]) {
+  return {
+    id: str(row.id),
+    name: str(row.name),
+    slug: str(row.slug),
+    categoryId: str(row.categoryId),
+    categoryName: strOrNull(row.categoryName),
+    productKind: str(row.productKind),
+    description: strOrNull(row.description),
+    isActive: bool(row.isActive),
+    isFeatured: bool(row.isFeatured),
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+    variants: variants.map(shapeVariantCost),
   };
 }
 
@@ -698,6 +735,7 @@ export async function listUsers(query: ListAdminUserQuery): Promise<Paginated<un
     status: query.status,
     roleCode: query.roleCode?.trim().toLowerCase(),
     q: query.q,
+    includeDeleted: query.includeDeleted ?? query.status === 'deleted',
   };
 
   // Kolom yang dikembalikan repository tidak pernah memuat password_hash
@@ -830,5 +868,595 @@ export async function updateUserStatus(
       reason: input.reason ?? null,
       sessionsRevoked: BLOCKING_STATUS.includes(status),
     };
+  });
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/users - tambah anggota
+// --------------------------------------------------------------------------
+export async function createUser(
+  actorUserId: string,
+  input: CreateUserInput,
+  audit: AuditContext = {},
+) {
+  const email = input.email ? normalizeEmail(input.email) : null;
+  const phoneE164 = input.phoneE164 ? normalizePhone(input.phoneE164) : null;
+  const displayName = normalizeText(input.displayName);
+
+  assertPasswordStrength(input.password);
+  if (email && (await authRepo.emailExists(email))) throw conflict('Email sudah terdaftar');
+  if (phoneE164 && (await authRepo.phoneExists(phoneE164))) {
+    throw conflict('Nomor telepon sudah terdaftar');
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  const roleIds = [...new Set(input.roleIds)];
+
+  return withTransaction(async (tx) => {
+    const roles: { id: string; code: string; name: string }[] = [];
+    for (const roleId of roleIds) {
+      const role = await adminRepo.findRoleById(roleId, tx);
+      if (!role) throw notFound('Role', roleId);
+      roles.push({ id: str(role.id), code: str(role.code), name: str(role.name) });
+    }
+
+    const created = await authRepo.insertUser(
+      { email, phoneE164, displayName, passwordHash, status: input.status },
+      tx,
+    );
+    if (!created) throw unprocessable('Anggota gagal disimpan, coba lagi');
+    const userId = str(created.id);
+
+    if (roleIds.length > 0) {
+      await adminRepo.assignUserRoles(userId, roleIds, actorUserId, true, tx);
+    }
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.user.create',
+        entityType: 'user',
+        entityId: userId,
+        newData: { email, phoneE164, displayName, status: input.status, roleIds },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return {
+      id: userId,
+      email: strOrNull(created.email),
+      phoneE164: strOrNull(created.phoneE164),
+      displayName,
+      status: str(created.status),
+      roles,
+    };
+  });
+}
+
+// --------------------------------------------------------------------------
+// PATCH /admin/users/:id - ubah profil anggota
+// --------------------------------------------------------------------------
+export async function updateUserProfile(
+  userId: string,
+  actorUserId: string,
+  input: UpdateUserInput,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const current = await adminRepo.findUserById(userId, tx);
+    if (!current) throw notFound('User', userId);
+    if (str(current.status) === 'deleted') {
+      throw badRequest('Anggota yang dihapus harus dipulihkan dulu sebelum diedit');
+    }
+
+    const data: Record<string, unknown> = {};
+    if (input.displayName !== undefined) data.display_name = normalizeText(input.displayName);
+
+    if (input.email !== undefined) {
+      const email = input.email ? normalizeEmail(input.email) : null;
+      if (email && email !== strOrNull(current.email)) {
+        if (await authRepo.emailExists(email, tx)) throw conflict('Email sudah terdaftar');
+      }
+      data.email = email;
+    }
+
+    if (input.phoneE164 !== undefined) {
+      const phoneE164 = input.phoneE164 ? normalizePhone(input.phoneE164) : null;
+      if (phoneE164 && phoneE164 !== strOrNull(current.phoneE164)) {
+        if (await authRepo.phoneExists(phoneE164, tx)) {
+          throw conflict('Nomor telepon sudah terdaftar');
+        }
+      }
+      data.phone_e164 = phoneE164;
+    }
+
+    const updated = await adminRepo.updateUserProfile(userId, data, tx);
+    if (!updated) throw notFound('User', userId);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.user.update',
+        entityType: 'user',
+        entityId: userId,
+        oldData: {
+          displayName: str(current.displayName),
+          email: strOrNull(current.email),
+          phoneE164: strOrNull(current.phoneE164),
+        },
+        newData: {
+          displayName: str(updated.displayName),
+          email: strOrNull(updated.email),
+          phoneE164: strOrNull(updated.phoneE164),
+        },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return {
+      id: str(updated.id),
+      email: strOrNull(updated.email),
+      phoneE164: strOrNull(updated.phoneE164),
+      displayName: str(updated.displayName),
+      status: str(updated.status),
+    };
+  });
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/roles/:id - detail role + daftar izin (untuk form edit)
+// --------------------------------------------------------------------------
+export async function getRole(roleId: string) {
+  const role = await adminRepo.findRoleById(roleId);
+  if (!role) throw notFound('Role', roleId);
+
+  const [permissions, userCount] = await Promise.all([
+    adminRepo.listRolePermissions(roleId),
+    adminRepo.countRoleUsers(roleId),
+  ]);
+
+  return {
+    ...shapeRole({ ...role, permissionCount: permissions.length, userCount }),
+    permissions: permissions.map(permissionKeyOf),
+    isSystem: (Object.values(ROLE_CODE) as string[]).includes(str(role.code)),
+  };
+}
+
+// --------------------------------------------------------------------------
+// DELETE /admin/roles/:id - hapus role non-sistem yang tidak terpakai
+// --------------------------------------------------------------------------
+export async function deleteRole(
+  roleId: string,
+  actorUserId: string,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const role = await adminRepo.findRoleById(roleId, tx);
+    if (!role) throw notFound('Role', roleId);
+
+    const code = str(role.code);
+    if ((Object.values(ROLE_CODE) as string[]).includes(code)) {
+      throw conflict(`Role sistem '${code}' tidak boleh dihapus`);
+    }
+
+    const userCount = await adminRepo.countRoleUsers(roleId, tx);
+    if (userCount > 0) {
+      throw conflict(
+        `Masih ada ${userCount} anggota memakai role ini. Pindahkan mereka ke role lain dulu.`,
+      );
+    }
+
+    await adminRepo.deleteRole(roleId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.role.delete',
+        entityType: 'role',
+        entityId: roleId,
+        oldData: { code, name: str(role.name), description: strOrNull(role.description) },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return { id: roleId, code, deleted: true };
+  });
+}
+
+// --------------------------------------------------------------------------
+// Produk: helper
+// --------------------------------------------------------------------------
+/** Pastikan produk punya tepat satu varian default. */
+async function ensureSingleDefaultVariant(productId: string, tx: TransactionClient) {
+  const variants = await catalogRepo.listVariantsWithCost(productId, tx);
+  if (variants.length === 0) return;
+
+  const defaults = variants.filter((row) => bool(row.isDefault));
+  if (defaults.length === 1) return;
+
+  if (defaults.length === 0) {
+    await adminRepo.updateVariant(str(variants[0].id), { is_default: true }, tx);
+    return;
+  }
+
+  for (const extra of defaults.slice(1)) {
+    await adminRepo.updateVariant(str(extra.id), { is_default: false }, tx);
+  }
+}
+
+async function loadAdminProduct(productId: string, tx: TransactionClient) {
+  const product = await catalogRepo.findProductById(productId, tx);
+  if (!product) throw notFound('Produk', productId);
+  const variants = await catalogRepo.listVariantsWithCost(productId, tx);
+  return shapeAdminProduct(product, variants);
+}
+
+function assertCompareAtPrice(priceIdr: number, compareAtPriceIdr: number | null | undefined) {
+  if (compareAtPriceIdr != null && compareAtPriceIdr < priceIdr) {
+    throw unprocessable('Harga sebelum diskon tidak boleh lebih kecil dari harga jual', [
+      { field: 'compareAtPriceIdr', message: 'Harga sebelum diskon harus >= harga jual' },
+    ]);
+  }
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/products - tambah produk + varian
+// --------------------------------------------------------------------------
+export async function createProduct(
+  actorUserId: string,
+  input: CreateProductInput,
+  audit: AuditContext = {},
+) {
+  const name = normalizeText(input.name);
+
+  // Nama varian harus unik di dalam satu produk.
+  const variantNames = input.variants.map((variant) => normalizeText(variant.name).toLowerCase());
+  if (new Set(variantNames).size !== variantNames.length) {
+    throw unprocessable('Nama varian tidak boleh kembar dalam satu produk', [
+      { field: 'variants', message: 'Ada nama varian yang dupikat' },
+    ]);
+  }
+  for (const variant of input.variants) {
+    assertCompareAtPrice(variant.priceIdr, variant.compareAtPriceIdr);
+  }
+
+  return withTransaction(async (tx) => {
+    const category = await catalogRepo.findCategoryById(input.categoryId, tx);
+    if (!category) throw notFound('Kategori', input.categoryId);
+
+    let slug = input.slug?.trim();
+    if (slug) {
+      if (await adminRepo.productSlugExists(slug, null, tx)) {
+        throw conflict(`Slug '${slug}' sudah dipakai produk lain`);
+      }
+    } else {
+      slug = await generateUniqueSlug(name, (candidate) => adminRepo.productSlugExists(candidate, null, tx));
+    }
+
+    const created = await adminRepo.insertProduct(
+      {
+        categoryId: input.categoryId,
+        name,
+        slug,
+        description: input.descriptionShort ?? null,
+        productKind: input.productKind,
+        isActive: input.isActive,
+        isFeatured: input.isFeatured,
+      },
+      tx,
+    );
+    if (!created) throw unprocessable('Produk gagal disimpan, coba lagi');
+    const productId = str(created.id);
+
+    // Tandai satu varian default (yang pertama bila tidak ada yang ditandai).
+    const explicitDefaultIndex = input.variants.findIndex((variant) => variant.isDefault);
+    const defaultIndex = explicitDefaultIndex >= 0 ? explicitDefaultIndex : 0;
+
+    for (const [index, variant] of input.variants.entries()) {
+      const sku = variant.sku?.trim() || null;
+      if (sku && (await adminRepo.variantSkuExists(sku, null, tx))) {
+        throw conflict(`SKU '${sku}' sudah dipakai varian lain`);
+      }
+      await adminRepo.insertVariant(
+        {
+          productId,
+          sku,
+          name: normalizeText(variant.name),
+          priceIdr: variant.priceIdr,
+          costIdr: variant.costIdr,
+          compareAtPriceIdr: variant.compareAtPriceIdr ?? null,
+          isDefault: index === defaultIndex,
+          isActive: variant.isActive,
+        },
+        tx,
+      );
+    }
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.create',
+        entityType: 'product',
+        entityId: productId,
+        newData: { name, slug, categoryId: input.categoryId, variantCount: input.variants.length },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return loadAdminProduct(productId, tx);
+  });
+}
+
+// --------------------------------------------------------------------------
+// PATCH /admin/products/:id - ubah produk
+// --------------------------------------------------------------------------
+export async function updateProduct(
+  productId: string,
+  actorUserId: string,
+  input: UpdateProductInput,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const current = await catalogRepo.findProductById(productId, tx);
+    if (!current) throw notFound('Produk', productId);
+
+    const data: Record<string, unknown> = {};
+    if (input.name !== undefined) data.name = normalizeText(input.name);
+    if (input.categoryId !== undefined) {
+      const category = await catalogRepo.findCategoryById(input.categoryId, tx);
+      if (!category) throw notFound('Kategori', input.categoryId);
+      data.category_id = input.categoryId;
+    }
+    if (input.productKind !== undefined) data.product_kind = input.productKind;
+    if (input.descriptionShort !== undefined) data.description = input.descriptionShort;
+    if (input.isActive !== undefined) data.is_active = input.isActive;
+    if (input.isFeatured !== undefined) data.is_featured = input.isFeatured;
+
+    if (input.slug !== undefined) {
+      const slug = input.slug.trim();
+      if (slug !== str(current.slug) && (await adminRepo.productSlugExists(slug, productId, tx))) {
+        throw conflict(`Slug '${slug}' sudah dipakai produk lain`);
+      }
+      data.slug = slug;
+    }
+
+    const updated = await adminRepo.updateProduct(productId, data, tx);
+    if (!updated) throw notFound('Produk', productId);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.update',
+        entityType: 'product',
+        entityId: productId,
+        oldData: { name: str(current.name), isActive: bool(current.isActive), isFeatured: bool(current.isFeatured) },
+        newData: data,
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return loadAdminProduct(productId, tx);
+  });
+}
+
+// --------------------------------------------------------------------------
+// DELETE /admin/products/:id - soft delete produk
+// --------------------------------------------------------------------------
+export async function deleteProduct(
+  productId: string,
+  actorUserId: string,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const current = await catalogRepo.findProductById(productId, tx);
+    if (!current) throw notFound('Produk', productId);
+
+    const deleted = await adminRepo.softDeleteProduct(productId, tx);
+    if (!deleted) throw notFound('Produk', productId);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.delete',
+        entityType: 'product',
+        entityId: productId,
+        oldData: { name: str(current.name), isActive: bool(current.isActive) },
+        newData: { deleted: true, soft: true },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return { id: productId, deleted: true, soft: true };
+  });
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/products/:id/variants - tambah varian
+// --------------------------------------------------------------------------
+export async function createVariant(
+  productId: string,
+  actorUserId: string,
+  input: ProductVariantInput,
+  audit: AuditContext = {},
+) {
+  const name = normalizeText(input.name);
+  assertCompareAtPrice(input.priceIdr, input.compareAtPriceIdr);
+
+  return withTransaction(async (tx) => {
+    const product = await catalogRepo.findProductById(productId, tx);
+    if (!product) throw notFound('Produk', productId);
+
+    const sku = input.sku?.trim() || null;
+    if (sku && (await adminRepo.variantSkuExists(sku, null, tx))) {
+      throw conflict(`SKU '${sku}' sudah dipakai varian lain`);
+    }
+
+    const existing = await catalogRepo.listVariantsWithCost(productId, tx);
+    if (existing.some((row) => str(row.name).toLowerCase() === name.toLowerCase())) {
+      throw conflict(`Varian '${name}' sudah ada di produk ini`);
+    }
+
+    const shouldBeDefault = input.isDefault === true || existing.length === 0;
+    if (shouldBeDefault) await adminRepo.clearDefaultVariant(productId, null, tx);
+
+    const created = await adminRepo.insertVariant(
+      {
+        productId,
+        sku,
+        name,
+        priceIdr: input.priceIdr,
+        costIdr: input.costIdr ?? 0,
+        compareAtPriceIdr: input.compareAtPriceIdr ?? null,
+        isDefault: shouldBeDefault,
+        isActive: input.isActive ?? true,
+      },
+      tx,
+    );
+    if (!created) throw unprocessable('Varian gagal disimpan, coba lagi');
+
+    await ensureSingleDefaultVariant(productId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.variant.create',
+        entityType: 'product',
+        entityId: productId,
+        newData: { name, priceIdr: input.priceIdr, costIdr: input.costIdr ?? 0, sku },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return loadAdminProduct(productId, tx);
+  });
+}
+
+// --------------------------------------------------------------------------
+// PATCH /admin/products/:id/variants/:variantId - ubah varian
+// --------------------------------------------------------------------------
+export async function updateProductVariant(
+  productId: string,
+  variantId: string,
+  actorUserId: string,
+  input: UpdateVariantInput,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const product = await catalogRepo.findProductById(productId, tx);
+    if (!product) throw notFound('Produk', productId);
+
+    const variant = await adminRepo.findVariantForProduct(variantId, productId, tx);
+    if (!variant) throw notFound('Varian', variantId);
+
+    const allVariants = await catalogRepo.listVariantsWithCost(productId, tx);
+    const existing = allVariants.find((row) => str(row.id) === variantId);
+    const currentPrice = num(existing?.priceIdr);
+    const nextPrice = input.priceIdr ?? currentPrice;
+
+    if (input.compareAtPriceIdr !== undefined) {
+      assertCompareAtPrice(nextPrice, input.compareAtPriceIdr);
+    } else if (existing && existing.compareAtPriceIdr != null && nextPrice > num(existing.compareAtPriceIdr)) {
+      throw unprocessable('Harga jual tidak boleh melebihi harga sebelum diskon', [
+        { field: 'priceIdr', message: 'Turunkan harga jual atau naikkan harga sebelum diskon' },
+      ]);
+    }
+
+    const data: Record<string, unknown> = {};
+    if (input.name !== undefined) {
+      const name = normalizeText(input.name);
+      if (allVariants.some((row) => str(row.id) !== variantId && str(row.name).toLowerCase() === name.toLowerCase())) {
+        throw conflict(`Varian '${name}' sudah ada di produk ini`);
+      }
+      data.name = name;
+    }
+    if (input.sku !== undefined) {
+      const sku = input.sku?.trim() || null;
+      if (sku && (await adminRepo.variantSkuExists(sku, variantId, tx))) {
+        throw conflict(`SKU '${sku}' sudah dipakai varian lain`);
+      }
+      data.sku = sku;
+    }
+    if (input.priceIdr !== undefined) data.price_idr = input.priceIdr;
+    if (input.costIdr !== undefined) data.cost_idr = input.costIdr;
+    if (input.compareAtPriceIdr !== undefined) data.compare_at_price_idr = input.compareAtPriceIdr;
+    if (input.isActive !== undefined) data.is_active = input.isActive;
+
+    if (input.isDefault === true) {
+      await adminRepo.clearDefaultVariant(productId, variantId, tx);
+      data.is_default = true;
+    }
+
+    await adminRepo.updateVariant(variantId, data, tx);
+    await ensureSingleDefaultVariant(productId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.variant.update',
+        entityType: 'product',
+        entityId: productId,
+        newData: { variantId, ...data },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return loadAdminProduct(productId, tx);
+  });
+}
+
+// --------------------------------------------------------------------------
+// DELETE /admin/products/:id/variants/:variantId - hapus varian
+// --------------------------------------------------------------------------
+export async function deleteVariant(
+  productId: string,
+  variantId: string,
+  actorUserId: string,
+  audit: AuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const product = await catalogRepo.findProductById(productId, tx);
+    if (!product) throw notFound('Produk', productId);
+
+    const variant = await adminRepo.findVariantForProduct(variantId, productId, tx);
+    if (!variant) throw notFound('Varian', variantId);
+
+    const total = await adminRepo.countVariants(productId, tx);
+    if (total <= 1) {
+      throw conflict('Produk harus punya minimal satu varian. Hapus produknya bila ingin menghilangkan.');
+    }
+
+    await adminRepo.deleteVariant(variantId, tx);
+    await ensureSingleDefaultVariant(productId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.product.variant.delete',
+        entityType: 'product',
+        entityId: productId,
+        oldData: { variantId },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return loadAdminProduct(productId, tx);
   });
 }

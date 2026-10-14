@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PRODUCT_KIND } from '../config/constants.js';
 import { dateSchema, uuidSchema } from './common.validator.js';
 
 // --------------------------------------------------------------------------
@@ -125,12 +126,115 @@ export const listAdminUserQuerySchema = z.object({
   status: z.enum(['active', 'pending', 'suspended', 'deleted']).optional(),
   roleCode: z.string().trim().max(60).optional(),
   q: z.string().trim().max(120).optional(),
+  /** Sertakan anggota yang dihapus (soft delete) agar bisa dipulihkan. */
+  includeDeleted: z
+    .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+    .transform((value) => value === true || value === 'true' || value === '1')
+    .optional(),
 });
 
 export const updateUserStatusSchema = z.object({
   status: z.enum(['active', 'pending', 'suspended', 'deleted']),
   reason: z.string().trim().max(500).optional(),
 });
+
+// --------------------------------------------------------------------------
+// CRUD user (anggota)
+// --------------------------------------------------------------------------
+export const createUserSchema = z
+  .object({
+    email: z.string().trim().email('Email tidak valid').max(160).nullish(),
+    phoneE164: z.string().trim().min(8, 'Nomor telepon minimal 8 digit').max(20).nullish(),
+    displayName: z.string().trim().min(2, 'Nama minimal 2 karakter').max(120),
+    password: z.string().min(8, 'Password minimal 8 karakter').max(128),
+    status: z.enum(['active', 'pending', 'suspended']).default('active'),
+    roleIds: z.array(uuidSchema).max(10).default([]),
+  })
+  .refine((value) => Boolean(value.email || value.phoneE164), {
+    message: 'Email atau nomor telepon wajib diisi',
+    path: ['email'],
+  });
+
+export const updateUserSchema = z
+  .object({
+    displayName: z.string().trim().min(2, 'Nama minimal 2 karakter').max(120).optional(),
+    email: z.string().trim().email('Email tidak valid').max(160).nullish(),
+    phoneE164: z.string().trim().min(8, 'Nomor telepon minimal 8 digit').max(20).nullish(),
+  })
+  .refine(
+    (value) =>
+      value.displayName !== undefined ||
+      value.email !== undefined ||
+      value.phoneE164 !== undefined,
+    { message: 'Tidak ada perubahan yang dikirim', path: ['displayName'] },
+  );
+
+// --------------------------------------------------------------------------
+// CRUD produk & varian
+// --------------------------------------------------------------------------
+export const productVariantInputSchema = z.object({
+  name: z.string().trim().min(1).max(80).default('Regular'),
+  sku: z.string().trim().max(60).nullish(),
+  priceIdr: z.coerce.number().int().min(0).max(1_000_000_000),
+  costIdr: z.coerce.number().int().min(0).max(1_000_000_000).default(0),
+  compareAtPriceIdr: z.coerce.number().int().min(0).max(1_000_000_000).nullish(),
+  isDefault: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+});
+
+export const createProductSchema = z.object({
+  name: z.string().trim().min(2, 'Nama produk minimal 2 karakter').max(160),
+  slug: z
+    .string()
+    .trim()
+    .max(160)
+    .regex(/^[a-z0-9-]*$/, 'Slug hanya boleh huruf kecil, angka, dan tanda minus')
+    .optional(),
+  categoryId: uuidSchema,
+  productKind: z.enum(PRODUCT_KIND).default('standard'),
+  descriptionShort: z.string().trim().max(2000).nullish(),
+  isActive: z.boolean().default(true),
+  isFeatured: z.boolean().default(false),
+  variants: z.array(productVariantInputSchema).min(1, 'Minimal satu varian').max(20),
+});
+
+export const updateProductSchema = z
+  .object({
+    name: z.string().trim().min(2, 'Nama produk minimal 2 karakter').max(160).optional(),
+    slug: z
+      .string()
+      .trim()
+      .max(160)
+      .regex(/^[a-z0-9-]*$/, 'Slug hanya boleh huruf kecil, angka, dan tanda minus')
+      .optional(),
+    categoryId: uuidSchema.optional(),
+    productKind: z.enum(PRODUCT_KIND).optional(),
+    descriptionShort: z.string().trim().max(2000).nullish(),
+    isActive: z.boolean().optional(),
+    isFeatured: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada perubahan yang dikirim',
+    path: ['name'],
+  });
+
+export const updateVariantSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    sku: z.string().trim().max(60).nullish(),
+    priceIdr: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+    costIdr: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+    compareAtPriceIdr: z.coerce.number().int().min(0).max(1_000_000_000).nullish(),
+    isDefault: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada perubahan yang dikirim',
+    path: ['name'],
+  });
+
+export const productIdParamSchema = z.object({ id: uuidSchema });
+export const productVariantParamSchema = z.object({ id: uuidSchema, variantId: uuidSchema });
 
 export type SalesDashboardQuery = z.infer<typeof salesDashboardQuerySchema>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
