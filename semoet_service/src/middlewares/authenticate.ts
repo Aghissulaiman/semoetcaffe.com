@@ -67,11 +67,10 @@ async function loadAuthContext(userId: string, sessionId: string) {
   const roleCodes = roles.map((role) => role.code);
   const permissionKeys = permissions.map((permission) => `${permission.resource}:${permission.action}`);
   const isSuperAdmin = roleCodes.includes(ROLE_CODE.SUPER_ADMIN);
-  const isStaff = roleCodes.some((code) =>
-    [ROLE_CODE.SUPER_ADMIN, ROLE_CODE.ADMIN, ROLE_CODE.BRANCH_MANAGER, ROLE_CODE.STAFF].includes(
-      code as never,
-    ),
-  );
+  // Semua role buatan panel admin (mis. "kasir") juga dianggap staf. Satu-satunya
+  // role non-staf adalah `customer`, sehingga user dengan role kustom tetap bisa
+  // memakai endpoint admin sesuai izin yang diberikan.
+  const isStaff = roleCodes.some((code) => code !== ROLE_CODE.CUSTOMER);
 
   return {
     id: user.id,

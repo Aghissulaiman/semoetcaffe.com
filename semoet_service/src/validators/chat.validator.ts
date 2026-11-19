@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CHAT_STATUS } from '../config/constants.js';
+import { CHAT_CATEGORY, CHAT_STATUS } from '../config/constants.js';
 import { booleanQuery, uuidSchema } from './common.validator.js';
 
 export const listConversationQuerySchema = z.object({
@@ -12,6 +12,7 @@ export const listConversationQuerySchema = z.object({
 
 export const createConversationSchema = z.object({
   topic: z.string().trim().min(3, 'Topik minimal 3 karakter').max(150),
+  category: z.enum(CHAT_CATEGORY).optional(),
   /** Customer boleh menyertakan pesan pembuka. */
   initialMessage: z.string().trim().min(1).max(2000).optional(),
 });
@@ -29,10 +30,15 @@ export const sendMessageSchema = z.object({
 
 export const conversationIdParamSchema = z.object({ id: uuidSchema });
 
-export const updateConversationSchema = z.object({
-  status: z.enum(CHAT_STATUS),
-  assignedStaffId: uuidSchema.nullable().optional(),
-});
+export const updateConversationSchema = z
+  .object({
+    status: z.enum(CHAT_STATUS).optional(),
+    category: z.enum(CHAT_CATEGORY).optional(),
+    assignedStaffId: uuidSchema.nullable().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Minimal satu field harus dikirim',
+  });
 
 export const assignConversationSchema = z.object({
   assignedStaffId: uuidSchema,

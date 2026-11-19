@@ -175,8 +175,11 @@ reservasi, health check, dan webhook payment gateway.
 | Promo & Voucher | `/promos`, `/me/vouchers` | Promo, klaim dan validasi voucher |
 | Loyalty & Points | `/me/points`, `/loyalty` | Saldo poin, hadiah, penukaran |
 | Review | `/reviews`, `/me/reviews` | Ulasan produk |
-| Reservasi | `/reservations` | Booking meja dine in |
+| Reservasi | `/reservations` | Booking meja dine in; admin ubah status + **DP** (nominal, status, bukti transfer) via `PATCH /admin/reservations/:id`, riwayat di `reservation_status_history` |
 | Event & Catering | `/event-packages`, `/event-bookings` | Paket event, katering, booking |
+| Agenda Event (Admin) | `/admin/event-agenda`, `/event-agenda` | Penanda tanggal penting (Ramadan, Lebaran, promo musiman); CRUD admin + daftar aktif publik |
+| Promo (Admin) | `/admin/promos` | CRUD promo voucher (dengan kode) dan diskon langsung menu (tanpa kode, otomatis di checkout & harga katalog) |
+| Kategori Menu (Admin) | `/admin/categories` | Tambah/ubah/hapus kategori menu, termasuk subkategori, urutan, slug otomatis, dan validasi siklus |
 | Inventory (Admin) | `/admin/ingredients` | Bahan baku, resep, stok, mutasi |
 | Community Moments | `/moments` | Moment pelanggan dan moderasi |
 | Notification | `/me/notifications`, `/me/devices` | Notifikasi dan perangkat push |

@@ -32,11 +32,13 @@ const FULL_CRUD_RESOURCES: Array<{ resource: string; label: string }> = [
   { resource: RESOURCES.RESERVATION, label: 'Reservasi' },
   { resource: RESOURCES.EVENT, label: 'Event dan katering' },
   { resource: RESOURCES.INVENTORY, label: 'Inventaris' },
+  { resource: RESOURCES.PURCHASE, label: 'Pembelian dan supplier' },
   { resource: RESOURCES.MOMENT, label: 'Moment komunitas' },
   { resource: RESOURCES.CHAT, label: 'Chat customer service' },
   { resource: RESOURCES.GAMIFICATION, label: 'Gamifikasi' },
   { resource: RESOURCES.AI, label: 'Asisten AI' },
   { resource: RESOURCES.AUDIT, label: 'Audit log' },
+  { resource: RESOURCES.EXPENSE, label: 'Pengeluaran operasional' },
 ];
 
 const ALL_ACTIONS = [
@@ -83,6 +85,7 @@ const ROLE_DEFINITIONS: RoleDefinition[] = [
       RESOURCES.RESERVATION,
       RESOURCES.EVENT,
       RESOURCES.INVENTORY,
+      RESOURCES.PURCHASE,
     ].flatMap((resource) => [
       `${resource}:${ACTIONS.READ}`,
       `${resource}:${ACTIONS.UPDATE}`,
@@ -101,6 +104,10 @@ const ROLE_DEFINITIONS: RoleDefinition[] = [
       `${RESOURCES.CHAT}:${ACTIONS.READ}`,
       `${RESOURCES.CHAT}:${ACTIONS.UPDATE}`,
       `${RESOURCES.MENU}:${ACTIONS.READ}`,
+      // Kasir perlu melihat stok dan mencatat stok fisik (stok opname).
+      `${RESOURCES.INVENTORY}:${ACTIONS.READ}`,
+      `${RESOURCES.INVENTORY}:${ACTIONS.CREATE}`,
+      `${RESOURCES.INVENTORY}:${ACTIONS.UPDATE}`,
     ],
   },
   {

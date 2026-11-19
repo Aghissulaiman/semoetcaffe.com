@@ -14,6 +14,7 @@ import {
   eventBookingIdParamSchema,
   eventPackageCodeParamSchema,
   listCateringPackageQuerySchema,
+  listEventAgendaQuerySchema,
   listEventPackageQuerySchema,
   listMyEventBookingQuerySchema,
 } from '../validators/event.validator.js';
@@ -76,6 +77,14 @@ eventRouter.get(
   readLimiter,
   validate({ query: availabilityQuerySchema }),
   asyncHandler(eventController.checkAvailability),
+);
+
+// GET /event-agenda - agenda event publik (Ramadan, Lebaran, promo musiman)
+eventRouter.get(
+  '/event-agenda',
+  readLimiter,
+  validate({ query: listEventAgendaQuerySchema }),
+  asyncHandler(eventController.listAgenda),
 );
 
 // POST /event-bookings - ajukan booking event

@@ -5,6 +5,7 @@ import { sendCreated, sendPaginated, sendSuccess } from '../utils/response.js';
 import type {
   CancelEventBookingInput,
   CreateEventBookingInput,
+  ListEventAgendaQuery,
   ListMyEventBookingQuery,
 } from '../validators/event.validator.js';
 
@@ -102,4 +103,16 @@ export async function checkAvailability(req: Request, res: Response): Promise<Re
   const data = await eventService.checkAvailability(query);
 
   return sendSuccess(res, data);
+}
+
+// GET /event-agenda - agenda publik (hanya yang aktif)
+export async function listAgenda(req: Request, res: Response): Promise<Response> {
+  const query = getQuery<ListEventAgendaQuery>(req);
+  const result = await eventService.listEventAgenda(query, { activeOnly: true });
+
+  return sendPaginated(res, result.items, {
+    page: result.meta.page,
+    limit: result.meta.limit,
+    total: result.meta.total,
+  });
 }

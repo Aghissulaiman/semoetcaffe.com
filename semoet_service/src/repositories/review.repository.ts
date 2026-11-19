@@ -80,7 +80,7 @@ export async function insertReview(
 ) {
   return one(
     executor,
-    `INSERT INTO reviews (user_id, order_item_id, product_id, food_rating, service_rating, speed_rating, review_text)
+    `INSERT INTO reviews AS r (user_id, order_item_id, product_id, food_rating, service_rating, speed_rating, review_text)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
      RETURNING ${REVIEW_COLUMNS}`,
     [
@@ -126,8 +126,8 @@ export async function updateReview(
   const assignments = columns.map((column, index) => `${column} = $${index + 3}`).join(', ');
   return one(
     executor,
-    `UPDATE reviews SET ${assignments}, updated_at = now()
-      WHERE id = $1 AND user_id = $2
+    `UPDATE reviews AS r SET ${assignments}, updated_at = now()
+      WHERE r.id = $1 AND r.user_id = $2
       RETURNING ${REVIEW_COLUMNS}`,
     [reviewId, userId, ...Object.values(data)],
   );
@@ -174,7 +174,7 @@ export async function moderateReview(
 ) {
   return one(
     executor,
-    `UPDATE reviews SET moderation_status = $2, updated_at = now() WHERE id = $1 RETURNING ${REVIEW_COLUMNS}`,
+    `UPDATE reviews AS r SET moderation_status = $2, updated_at = now() WHERE r.id = $1 RETURNING ${REVIEW_COLUMNS}`,
     [reviewId, moderationStatus],
   );
 }

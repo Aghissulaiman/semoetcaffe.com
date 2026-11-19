@@ -2,13 +2,6 @@ import type { RequestHandler } from 'express';
 import { ACTIONS, ROLE_CODE, type RoleCode } from '../config/constants.js';
 import { ForbiddenError, UnauthorizedError } from '../errors/AppError.js';
 
-const STAFF_ROLES: RoleCode[] = [
-  ROLE_CODE.SUPER_ADMIN,
-  ROLE_CODE.ADMIN,
-  ROLE_CODE.BRANCH_MANAGER,
-  ROLE_CODE.STAFF,
-];
-
 function ensureAuthenticated(req: { user?: unknown }): void {
   if (!req.user) throw new UnauthorizedError();
 }
@@ -35,8 +28,21 @@ export function requireRoles(...roles: RoleCode[]): RequestHandler {
   };
 }
 
-/** Staff = admin / branch manager / staff / super admin. */
-export const requireStaff: RequestHandler = requireRoles(...STAFF_ROLES);
+/**
+ * Staff = semua akun dengan role selain `customer` (termasuk role kustom yang
+ * dibuat lewat panel admin). Izin detailnya tetap dicek oleh requirePermission.
+ */
+export const requireStaff: RequestHandler = (req, _res, next) => {
+  try {
+    ensureAuthenticated(req);
+    if (!req.user!.isStaff) {
+      throw new ForbiddenError('Endpoint ini hanya untuk akun staf/admin');
+    }
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+};
 
 export const requireAdmin: RequestHandler = requireRoles(ROLE_CODE.SUPER_ADMIN, ROLE_CODE.ADMIN);
 

@@ -169,9 +169,9 @@ export const inventoryPaths: Record<string, PathSpec> = {
     get: {
       tags: inventoryTags,
       summary: 'Lokasi stok',
-      description: 'Lokasi stok terdaftar per cabang (mis. Gudang Utama, Cold Storage).',
+      description: 'Lokasi stok terdaftar (mis. Gudang Utama, Cold Storage, outlet).',
       operationId: 'adminListStockLocations',
-      parameters: [...paginationParameters(), queryParam('branchId', { type: 'string', format: 'uuid' }, 'Filter cabang.')],
+      parameters: [...paginationParameters()],
       responses: {
         '200': paginatedResponse(ref('StockLocation')),
         '401': commonErrors.unauthorized,
@@ -186,8 +186,8 @@ export const inventoryPaths: Record<string, PathSpec> = {
         required: true,
         content: {
           'application/json': {
-            schema: { type: 'object', required: ['branchId', 'name'], properties: { branchId: uuid, name: { type: 'string', maxLength: 80 } } },
-            example: { branchId: '11111111-1111-4111-8111-111111111111', name: 'Cold Storage' },
+            schema: { type: 'object', required: ['name'], properties: { name: { type: 'string', maxLength: 80 } } },
+            example: { name: 'Cold Storage' },
           },
         },
       },
@@ -210,7 +210,6 @@ export const inventoryPaths: Record<string, PathSpec> = {
       parameters: [
         ...paginationParameters(),
         queryParam('stockLocationId', { type: 'string', format: 'uuid' }, 'Filter lokasi stok.'),
-        queryParam('branchId', { type: 'string', format: 'uuid' }, 'Filter cabang lewat lokasi stok.'),
         queryParam('ingredientId', { type: 'string', format: 'uuid' }, 'Filter bahan.'),
         enumQueryParam(
           'movementType',
@@ -293,7 +292,6 @@ export const inventoryPaths: Record<string, PathSpec> = {
       operationId: 'adminStockSnapshot',
       parameters: [
         queryParam('stockLocationId', { type: 'string', format: 'uuid' }, 'Filter lokasi stok.'),
-        queryParam('branchId', { type: 'string', format: 'uuid' }, 'Filter cabang.'),
         queryParam('belowReorderLevelOnly', { type: 'boolean' }, 'Hanya bahan yang perlu dipesan ulang.'),
       ],
       responses: {
@@ -679,6 +677,23 @@ export const chatPaths: Record<string, PathSpec> = {
       responses: {
         '201': successResponse(ref('ChatConversation'), 'Percakapan dibuat.'),
         '400': commonErrors.validation,
+        '401': commonErrors.unauthorized,
+      },
+    },
+  },
+
+  '/chat/conversations/mine': {
+    get: {
+      tags: chatTags,
+      summary: 'Daftar percakapan customer',
+      description: 'Riwayat percakapan milik customer yang sedang login.',
+      operationId: 'chatListMyConversations',
+      parameters: [
+        ...paginationParameters(),
+        enumQueryParam('status', ['open', 'waiting', 'resolved', 'closed'], 'Filter status percakapan.'),
+      ],
+      responses: {
+        '200': paginatedResponse(ref('ChatConversation')),
         '401': commonErrors.unauthorized,
       },
     },

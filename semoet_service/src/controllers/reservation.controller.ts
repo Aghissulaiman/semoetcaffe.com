@@ -45,6 +45,35 @@ export async function cancel(req: Request, res: Response): Promise<Response> {
   return sendSuccess(res, data);
 }
 
+// POST /reservations/:id/deposit-charge - pelanggan bayar DP sendiri (Midtrans)
+export async function createDepositCharge(req: Request, res: Response): Promise<Response> {
+  const userId = getUserId(req);
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<{
+    stage?: 'deposit' | 'deposit2' | 'settlement';
+    amountIdr?: number | null;
+    paymentMethod?: string;
+    idempotencyKey?: string;
+  }>(req);
+  const data = await reservationService.createMyDepositCharge(userId, id, body);
+  return sendCreated(res, data);
+}
+
+// POST /reservations/:id/deposit-proof - pelanggan unggah bukti transfer DP
+export async function uploadDepositProof(req: Request, res: Response): Promise<Response> {
+  const userId = getUserId(req);
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<{
+    stage?: 'deposit' | 'deposit2' | 'settlement';
+    data: string;
+    contentType?: string;
+    amountIdr?: number | null;
+    note?: string | null;
+  }>(req);
+  const data = await reservationService.uploadMyDepositProof(userId, id, body);
+  return sendCreated(res, data);
+}
+
 // GET /reservations/availability (publik, tanpa login)
 export async function checkAvailability(req: Request, res: Response): Promise<Response> {
   const query = getQuery<CheckAvailabilityQuery>(req);

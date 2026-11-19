@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE SCHEMA IF NOT EXISTS semoet;
 SET search_path TO semoet, public;
 
-CREATE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   NEW.updated_at := now();
   RETURN NEW;
@@ -18,25 +18,25 @@ $$;
 -- -----------------------------------------------------------------------------
 -- Identity, access control, customer and family accounts
 -- -----------------------------------------------------------------------------
-CREATE TABLE roles (
+CREATE TABLE IF NOT EXISTS roles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
   description text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE permissions (
+CREATE TABLE IF NOT EXISTS permissions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   resource text NOT NULL,
   action text NOT NULL,
   UNIQUE (resource, action)
 );
-CREATE TABLE role_permissions (
+CREATE TABLE IF NOT EXISTS role_permissions (
   role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
   permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
   PRIMARY KEY (role_id, permission_id)
 );
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   phone_e164 text UNIQUE,
   email citext UNIQUE,
@@ -51,14 +51,14 @@ CREATE TABLE users (
   deleted_at timestamptz,
   CHECK (phone_e164 IS NOT NULL OR email IS NOT NULL)
 );
-CREATE TABLE user_roles (
+CREATE TABLE IF NOT EXISTS user_roles (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role_id uuid NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
   assigned_at timestamptz NOT NULL DEFAULT now(),
   assigned_by uuid REFERENCES users(id) ON DELETE SET NULL,
   PRIMARY KEY (user_id, role_id)
 );
-CREATE TABLE auth_identities (
+CREATE TABLE IF NOT EXISTS auth_identities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   provider text NOT NULL CHECK (provider IN ('google','apple')),
@@ -68,7 +68,7 @@ CREATE TABLE auth_identities (
   UNIQUE (provider, provider_subject),
   UNIQUE (user_id, provider)
 );
-CREATE TABLE otp_requests (
+CREATE TABLE IF NOT EXISTS otp_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   phone_e164 text NOT NULL,
   purpose text NOT NULL CHECK (purpose IN ('login','signup','verify_phone','password_reset')),
@@ -80,8 +80,8 @@ CREATE TABLE otp_requests (
   request_ip inet,
   CHECK (expires_at > requested_at)
 );
-CREATE INDEX otp_requests_phone_latest_idx ON otp_requests(phone_e164, requested_at DESC);
-CREATE TABLE user_sessions (
+CREATE INDEX IF NOT EXISTS otp_requests_phone_latest_idx ON otp_requests(phone_e164, requested_at DESC);
+CREATE TABLE IF NOT EXISTS user_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   refresh_token_hash text NOT NULL UNIQUE,
@@ -92,9 +92,9 @@ CREATE TABLE user_sessions (
   revoked_at timestamptz,
   CHECK (expires_at > created_at)
 );
-CREATE INDEX user_sessions_user_active_idx ON user_sessions(user_id, expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS user_sessions_user_active_idx ON user_sessions(user_id, expires_at) WHERE revoked_at IS NULL;
 
-CREATE TABLE customer_tiers (
+CREATE TABLE IF NOT EXISTS customer_tiers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -103,7 +103,7 @@ CREATE TABLE customer_tiers (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE customer_profiles (
+CREATE TABLE IF NOT EXISTS customer_profiles (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   tier_id uuid REFERENCES customer_tiers(id) ON DELETE SET NULL,
   birth_date date,
@@ -112,7 +112,7 @@ CREATE TABLE customer_profiles (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE user_addresses (
+CREATE TABLE IF NOT EXISTS user_addresses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   label text NOT NULL,
@@ -132,15 +132,15 @@ CREATE TABLE user_addresses (
   CHECK (latitude IS NULL OR latitude BETWEEN -90 AND 90),
   CHECK (longitude IS NULL OR longitude BETWEEN -180 AND 180)
 );
-CREATE UNIQUE INDEX user_addresses_one_default_idx ON user_addresses(user_id) WHERE is_default;
-CREATE TABLE family_groups (
+CREATE UNIQUE INDEX IF NOT EXISTS user_addresses_one_default_idx ON user_addresses(user_id) WHERE is_default;
+CREATE TABLE IF NOT EXISTS family_groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name text NOT NULL DEFAULT 'Semoet Family',
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (owner_user_id)
 );
-CREATE TABLE family_members (
+CREATE TABLE IF NOT EXISTS family_members (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   family_group_id uuid NOT NULL REFERENCES family_groups(id) ON DELETE CASCADE,
   linked_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -150,16 +150,17 @@ CREATE TABLE family_members (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK (display_name <> '')
 );
-CREATE INDEX family_members_group_idx ON family_members(family_group_id);
+CREATE INDEX IF NOT EXISTS family_members_group_idx ON family_members(family_group_id);
 
 -- -----------------------------------------------------------------------------
 -- Cafe locations, service hours and menu catalog
 -- -----------------------------------------------------------------------------
-CREATE TABLE branches (
+CREATE TABLE IF NOT EXISTS branches (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
   phone text,
+  email text,
   address text NOT NULL,
   timezone text NOT NULL DEFAULT 'Asia/Jakarta',
   latitude numeric(10,7),
@@ -168,7 +169,7 @@ CREATE TABLE branches (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE branch_business_hours (
+CREATE TABLE IF NOT EXISTS branch_business_hours (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   day_of_week smallint NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
@@ -177,15 +178,19 @@ CREATE TABLE branch_business_hours (
   service_type text NOT NULL DEFAULT 'all' CHECK (service_type IN ('all','dine_in','pickup','delivery')),
   UNIQUE (branch_id, day_of_week, service_type, opens_at)
 );
-CREATE TABLE dining_areas (
+CREATE TABLE IF NOT EXISTS dining_areas (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   name text NOT NULL,
   area_type text NOT NULL CHECK (area_type IN ('indoor','outdoor','private_room','other')),
+  -- Ruangan disewakan per jam; harga ini jadi dasar perhitungan DP & pelunasan.
+  price_per_hour_idr bigint CHECK (price_per_hour_idr IS NULL OR price_per_hour_idr >= 0),
+  image_url text,
+  image_storage_key text,
   is_active boolean NOT NULL DEFAULT true,
   UNIQUE (branch_id, name)
 );
-CREATE TABLE cafe_tables (
+CREATE TABLE IF NOT EXISTS cafe_tables (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   area_id uuid NOT NULL REFERENCES dining_areas(id) ON DELETE RESTRICT,
   table_code text NOT NULL,
@@ -195,7 +200,18 @@ CREATE TABLE cafe_tables (
   UNIQUE (area_id, table_code)
 );
 
-CREATE TABLE product_categories (
+-- Migrasi idempoten: kolom gambar area (diisi admin lewat panel, dipakai app
+-- pelanggan untuk menampilkan pilihan area bergambar).
+ALTER TABLE dining_areas ADD COLUMN IF NOT EXISTS image_url text;
+ALTER TABLE dining_areas ADD COLUMN IF NOT EXISTS image_storage_key text;
+-- Harga sewa ruangan per jam (dasar perhitungan DP & pelunasan).
+ALTER TABLE dining_areas ADD COLUMN IF NOT EXISTS price_per_hour_idr bigint;
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+ALTER TABLE public.dining_areas ADD COLUMN IF NOT EXISTS image_url text;
+ALTER TABLE public.dining_areas ADD COLUMN IF NOT EXISTS image_storage_key text;
+ALTER TABLE public.dining_areas ADD COLUMN IF NOT EXISTS price_per_hour_idr bigint;
+
+CREATE TABLE IF NOT EXISTS product_categories (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   parent_id uuid REFERENCES product_categories(id) ON DELETE SET NULL,
   name text NOT NULL,
@@ -204,7 +220,7 @@ CREATE TABLE product_categories (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   category_id uuid NOT NULL REFERENCES product_categories(id) ON DELETE RESTRICT,
   name text NOT NULL,
@@ -219,9 +235,17 @@ CREATE TABLE products (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
+  deleted_by uuid REFERENCES users(id) ON DELETE SET NULL,
   CHECK (available_until IS NULL OR available_from IS NULL OR available_until > available_from)
 );
-CREATE TABLE product_images (
+ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_by uuid REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS deleted_by uuid REFERENCES public.users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS products_deleted_at_public_idx ON public.products(deleted_at) WHERE deleted_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS product_images (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   storage_key text NOT NULL UNIQUE,
@@ -233,8 +257,8 @@ CREATE TABLE product_images (
   height_px integer CHECK (height_px IS NULL OR height_px > 0),
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX product_images_one_primary_idx ON product_images(product_id) WHERE is_primary;
-CREATE TABLE product_variants (
+CREATE UNIQUE INDEX IF NOT EXISTS product_images_one_primary_idx ON product_images(product_id) WHERE is_primary;
+CREATE TABLE IF NOT EXISTS product_variants (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   sku text UNIQUE,
@@ -249,8 +273,8 @@ CREATE TABLE product_variants (
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (product_id, name)
 );
-CREATE UNIQUE INDEX product_variants_one_default_idx ON product_variants(product_id) WHERE is_default;
-CREATE TABLE product_availability (
+CREATE UNIQUE INDEX IF NOT EXISTS product_variants_one_default_idx ON product_variants(product_id) WHERE is_default;
+CREATE TABLE IF NOT EXISTS product_availability (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   branch_id uuid REFERENCES branches(id) ON DELETE CASCADE,
@@ -263,9 +287,9 @@ CREATE TABLE product_availability (
   CHECK ((starts_at IS NULL) = (ends_at IS NULL)),
   CHECK (ends_on IS NULL OR starts_on IS NULL OR ends_on > starts_on)
 );
-CREATE INDEX product_availability_lookup_idx ON product_availability(product_id, branch_id, day_of_week);
+CREATE INDEX IF NOT EXISTS product_availability_lookup_idx ON product_availability(product_id, branch_id, day_of_week);
 
-CREATE TABLE modifier_groups (
+CREATE TABLE IF NOT EXISTS modifier_groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
   min_select smallint NOT NULL DEFAULT 0 CHECK (min_select >= 0),
@@ -273,7 +297,7 @@ CREATE TABLE modifier_groups (
   is_required boolean NOT NULL DEFAULT false,
   is_active boolean NOT NULL DEFAULT true
 );
-CREATE TABLE modifier_options (
+CREATE TABLE IF NOT EXISTS modifier_options (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id uuid NOT NULL REFERENCES modifier_groups(id) ON DELETE CASCADE,
   name text NOT NULL,
@@ -282,7 +306,7 @@ CREATE TABLE modifier_options (
   is_active boolean NOT NULL DEFAULT true,
   UNIQUE (group_id, name)
 );
-CREATE TABLE product_modifier_groups (
+CREATE TABLE IF NOT EXISTS product_modifier_groups (
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   group_id uuid NOT NULL REFERENCES modifier_groups(id) ON DELETE RESTRICT,
   sort_order integer NOT NULL DEFAULT 0,
@@ -291,7 +315,7 @@ CREATE TABLE product_modifier_groups (
   PRIMARY KEY (product_id, group_id)
 );
 
-CREATE TABLE home_banners (
+CREATE TABLE IF NOT EXISTS home_banners (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   title text NOT NULL,
   image_storage_key text NOT NULL,
@@ -303,7 +327,7 @@ CREATE TABLE home_banners (
   is_active boolean NOT NULL DEFAULT true,
   CHECK (ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at)
 );
-CREATE TABLE featured_products (
+CREATE TABLE IF NOT EXISTS featured_products (
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   placement text NOT NULL CHECK (placement IN ('favorite','new','family_bundle','meeting_bundle','birthday_bundle','buffet_bundle','event')),
   starts_at timestamptz,
@@ -316,7 +340,7 @@ CREATE TABLE featured_products (
 -- -----------------------------------------------------------------------------
 -- Promotions, vouchers and loyalty
 -- -----------------------------------------------------------------------------
-CREATE TABLE promo_campaigns (
+CREATE TABLE IF NOT EXISTS promo_campaigns (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text UNIQUE,
   name text NOT NULL,
@@ -335,16 +359,16 @@ CREATE TABLE promo_campaigns (
   CHECK (ends_at > starts_at),
   CHECK (discount_type <> 'percentage' OR discount_value <= 100)
 );
-CREATE TABLE promo_product_eligibility (
+CREATE TABLE IF NOT EXISTS promo_product_eligibility (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   promo_id uuid NOT NULL REFERENCES promo_campaigns(id) ON DELETE CASCADE,
   product_id uuid REFERENCES products(id) ON DELETE CASCADE,
   category_id uuid REFERENCES product_categories(id) ON DELETE CASCADE,
   CHECK (product_id IS NOT NULL OR category_id IS NOT NULL)
 );
-CREATE UNIQUE INDEX promo_eligible_product_unique_idx ON promo_product_eligibility(promo_id, product_id) WHERE product_id IS NOT NULL;
-CREATE UNIQUE INDEX promo_eligible_category_unique_idx ON promo_product_eligibility(promo_id, category_id) WHERE category_id IS NOT NULL;
-CREATE TABLE user_vouchers (
+CREATE UNIQUE INDEX IF NOT EXISTS promo_eligible_product_unique_idx ON promo_product_eligibility(promo_id, product_id) WHERE product_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS promo_eligible_category_unique_idx ON promo_product_eligibility(promo_id, category_id) WHERE category_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS user_vouchers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   promo_id uuid NOT NULL REFERENCES promo_campaigns(id) ON DELETE RESTRICT,
@@ -352,10 +376,10 @@ CREATE TABLE user_vouchers (
   status text NOT NULL DEFAULT 'available' CHECK (status IN ('available','reserved','used','expired','revoked')),
   issued_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz,
-  used_at timestamptz,
+  used_at timestamptz
 );
-CREATE INDEX user_vouchers_available_idx ON user_vouchers(user_id, expires_at) WHERE status = 'available';
-CREATE TABLE orders_promo_redemptions (
+CREATE INDEX IF NOT EXISTS user_vouchers_available_idx ON user_vouchers(user_id, expires_at) WHERE status = 'available';
+CREATE TABLE IF NOT EXISTS orders_promo_redemptions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   promo_id uuid NOT NULL REFERENCES promo_campaigns(id) ON DELETE RESTRICT,
   user_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -364,9 +388,9 @@ CREATE TABLE orders_promo_redemptions (
   discount_idr bigint NOT NULL CHECK (discount_idr >= 0),
   redeemed_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX promo_redemptions_user_idx ON orders_promo_redemptions(promo_id, user_id, redeemed_at);
+CREATE INDEX IF NOT EXISTS promo_redemptions_user_idx ON orders_promo_redemptions(promo_id, user_id, redeemed_at);
 
-CREATE TABLE loyalty_rewards (
+CREATE TABLE IF NOT EXISTS loyalty_rewards (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -376,7 +400,7 @@ CREATE TABLE loyalty_rewards (
   reward_config jsonb NOT NULL DEFAULT '{}'::jsonb,
   is_active boolean NOT NULL DEFAULT true
 );
-CREATE TABLE point_ledger (
+CREATE TABLE IF NOT EXISTS point_ledger (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   points_delta integer NOT NULL CHECK (points_delta <> 0),
@@ -389,8 +413,8 @@ CREATE TABLE point_ledger (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((mutation_type = 'earn' AND points_delta > 0) OR (mutation_type IN ('redeem','expire') AND points_delta < 0) OR mutation_type = 'adjustment')
 );
-CREATE INDEX point_ledger_user_idx ON point_ledger(user_id, created_at DESC);
-CREATE TABLE loyalty_redemptions (
+CREATE INDEX IF NOT EXISTS point_ledger_user_idx ON point_ledger(user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS loyalty_redemptions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   reward_id uuid NOT NULL REFERENCES loyalty_rewards(id) ON DELETE RESTRICT,
@@ -403,7 +427,7 @@ CREATE TABLE loyalty_redemptions (
 -- -----------------------------------------------------------------------------
 -- Orders, payments, fulfillment and immutable customer-facing history
 -- -----------------------------------------------------------------------------
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_number text NOT NULL UNIQUE,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -440,11 +464,13 @@ CREATE TABLE orders (
   CHECK ((fulfillment_type <> 'dine_in') OR table_id IS NOT NULL)
 );
 ALTER TABLE orders_promo_redemptions
+  DROP CONSTRAINT IF EXISTS orders_promo_redemptions_order_fk;
+ALTER TABLE orders_promo_redemptions
   ADD CONSTRAINT orders_promo_redemptions_order_fk FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT;
-CREATE INDEX orders_user_recent_idx ON orders(user_id, placed_at DESC);
-CREATE INDEX orders_branch_status_idx ON orders(branch_id, order_status, placed_at DESC);
-CREATE INDEX orders_payment_status_idx ON orders(payment_status, placed_at DESC);
-CREATE TABLE order_items (
+CREATE INDEX IF NOT EXISTS orders_user_recent_idx ON orders(user_id, placed_at DESC);
+CREATE INDEX IF NOT EXISTS orders_branch_status_idx ON orders(branch_id, order_status, placed_at DESC);
+CREATE INDEX IF NOT EXISTS orders_payment_status_idx ON orders(payment_status, placed_at DESC);
+CREATE TABLE IF NOT EXISTS order_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   product_id uuid REFERENCES products(id) ON DELETE SET NULL,
@@ -461,8 +487,8 @@ CREATE TABLE order_items (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK (line_total_idr = quantity * (unit_price_idr + modifiers_total_idr))
 );
-CREATE INDEX order_items_order_idx ON order_items(order_id);
-CREATE TABLE order_item_modifiers (
+CREATE INDEX IF NOT EXISTS order_items_order_idx ON order_items(order_id);
+CREATE TABLE IF NOT EXISTS order_item_modifiers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_item_id uuid NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
   modifier_group_name_snapshot text NOT NULL,
@@ -471,7 +497,7 @@ CREATE TABLE order_item_modifiers (
   quantity integer NOT NULL DEFAULT 1 CHECK (quantity > 0),
   option_id uuid REFERENCES modifier_options(id) ON DELETE SET NULL
 );
-CREATE TABLE order_status_history (
+CREATE TABLE IF NOT EXISTS order_status_history (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   from_status text,
@@ -480,16 +506,20 @@ CREATE TABLE order_status_history (
   note text,
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX order_status_history_order_idx ON order_status_history(order_id, occurred_at);
-CREATE TABLE payment_transactions (
+CREATE INDEX IF NOT EXISTS order_status_history_order_idx ON order_status_history(order_id, occurred_at);
+CREATE TABLE IF NOT EXISTS payment_transactions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id uuid REFERENCES orders(id) ON DELETE RESTRICT,
+  event_booking_id uuid REFERENCES event_bookings(id) ON DELETE RESTRICT,
+  reservation_id uuid REFERENCES reservations(id) ON DELETE RESTRICT,
   provider text NOT NULL,
   payment_method text NOT NULL CHECK (payment_method IN ('qris','virtual_account','bank_transfer','ewallet','card','cash')),
   provider_reference text,
   idempotency_key text UNIQUE,
   transaction_type text NOT NULL DEFAULT 'charge' CHECK (transaction_type IN ('charge','refund')),
-  payment_purpose text NOT NULL DEFAULT 'order' CHECK (payment_purpose IN ('order','event_deposit','event_installment','event_final','event_refund')),
+  payment_purpose text NOT NULL DEFAULT 'order' CHECK (payment_purpose IN ('order','event_deposit','event_installment','event_final','event_refund','reservation_deposit')),
+  /** Tahap pembayaran untuk DP reservasi 3 tahap: DP1/DP2/pelunasan. */
+  payment_stage text CHECK (payment_stage IN ('deposit','deposit2','settlement')),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','expired','cancelled')),
   amount_idr bigint NOT NULL CHECK (amount_idr > 0),
   currency char(3) NOT NULL DEFAULT 'IDR' CHECK (currency = 'IDR'),
@@ -500,11 +530,12 @@ CREATE TABLE payment_transactions (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider, provider_reference),
+  CHECK (num_nonnulls(order_id, event_booking_id, reservation_id) = 1),
   CHECK ((transaction_type = 'refund' AND payment_purpose IN ('order','event_refund')) OR
          (transaction_type = 'charge' AND payment_purpose <> 'event_refund'))
 );
-CREATE INDEX payment_transactions_order_idx ON payment_transactions(order_id, created_at DESC);
-CREATE TABLE payment_events (
+CREATE INDEX IF NOT EXISTS payment_transactions_order_idx ON payment_transactions(order_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS payment_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   payment_id uuid NOT NULL REFERENCES payment_transactions(id) ON DELETE CASCADE,
   provider_event_id text,
@@ -513,7 +544,7 @@ CREATE TABLE payment_events (
   received_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider_event_id)
 );
-CREATE TABLE order_deliveries (
+CREATE TABLE IF NOT EXISTS order_deliveries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
   provider text,
@@ -526,25 +557,25 @@ CREATE TABLE order_deliveries (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE delivery_tracking_logs (
+CREATE TABLE IF NOT EXISTS delivery_tracking_logs (
   id bigserial PRIMARY KEY,
   delivery_id uuid NOT NULL REFERENCES order_deliveries(id) ON DELETE CASCADE,
   latitude numeric(10,7) NOT NULL CHECK (latitude BETWEEN -90 AND 90),
   longitude numeric(10,7) NOT NULL CHECK (longitude BETWEEN -180 AND 180),
   recorded_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX delivery_tracking_recent_idx ON delivery_tracking_logs(delivery_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS delivery_tracking_recent_idx ON delivery_tracking_logs(delivery_id, recorded_at DESC);
 
 -- -----------------------------------------------------------------------------
 -- Favorites, verified reviews and dining reservations
 -- -----------------------------------------------------------------------------
-CREATE TABLE favorites (
+CREATE TABLE IF NOT EXISTS favorites (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   product_id uuid NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, product_id)
 );
-CREATE TABLE reviews (
+CREATE TABLE IF NOT EXISTS reviews (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   order_item_id uuid NOT NULL UNIQUE REFERENCES order_items(id) ON DELETE RESTRICT,
@@ -558,8 +589,8 @@ CREATE TABLE reviews (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (food_rating IS NOT NULL OR service_rating IS NOT NULL OR speed_rating IS NOT NULL)
 );
-CREATE INDEX reviews_product_recent_idx ON reviews(product_id, created_at DESC);
-CREATE TABLE reservations (
+CREATE INDEX IF NOT EXISTS reviews_product_recent_idx ON reviews(product_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS reservations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   reservation_number text NOT NULL UNIQUE,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -571,20 +602,244 @@ CREATE TABLE reservations (
   seating_preference text CHECK (seating_preference IN ('indoor','outdoor','private_room','any')),
   status text NOT NULL DEFAULT 'requested' CHECK (status IN ('requested','confirmed','seated','completed','cancelled','no_show')),
   special_requests text,
+  -- Kontak yang diisi pelanggan pada form reservasi. Bisa berbeda dari data
+  -- akun (mis. nomor PIC acara), jadi disimpan terpisah dan dipakai admin.
+  contact_name text,
+  contact_phone text,
+  -- Sewa ruangan: total = harga_per_jam × jumlah jam (dipotret saat dibuat).
+  area_price_per_hour_idr bigint,
+  total_estimate_idr bigint,
+  -- Pemecahan total Estimate: sewa ruangan + order menu (makanan/minuman).
+  -- DP1/DP2/pelunasan dihitung dari TOTAL (sewa + menu), jadi uang muka
+  -- mencakup makanan & minuman yang dipesan pelanggan, bukan sewa saja.
+  room_total_idr bigint,
+  menu_total_idr bigint,
+  -- Uang muka (DP) 3 tahap:
+  --   deposit_*        = DP1 (dibayar saat mengisi formulir, flat × jumlah ruangan)
+  --   deposit2_*       = DP2 (setelah reservasi dikonfirmasi, % dari total_estimate_idr)
+  --   settlement_*     = Pelunasan (sisa total)
+  deposit_amount_idr bigint,
+  deposit_status text NOT NULL DEFAULT 'unpaid' CHECK (deposit_status IN ('unpaid','pending','paid','refunded')),
+  deposit_proof_url text,
+  deposit_proof_storage_key text,
+  deposit_paid_at timestamptz,
+  deposit_note text,
+  deposit2_amount_idr bigint,
+  deposit2_status text NOT NULL DEFAULT 'unpaid' CHECK (deposit2_status IN ('unpaid','pending','paid','refunded')),
+  deposit2_proof_url text,
+  deposit2_proof_storage_key text,
+  deposit2_paid_at timestamptz,
+  deposit2_note text,
+  settlement_amount_idr bigint,
+  settlement_status text NOT NULL DEFAULT 'unpaid' CHECK (settlement_status IN ('unpaid','pending','paid','refunded')),
+  settlement_proof_url text,
+  settlement_proof_storage_key text,
+  settlement_paid_at timestamptz,
+  settlement_note text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX reservations_branch_time_idx ON reservations(branch_id, reserved_for, status);
-CREATE TABLE reservation_tables (
+CREATE INDEX IF NOT EXISTS reservations_branch_time_idx ON reservations(branch_id, reserved_for, status);
+
+-- Pengaturan persentase DP reservasi (satu baris, id = 1).
+-- DP1 = clamp(dp1_percent% × total, dp1_min_idr, dp1_max_idr)
+-- DP2 = dp2_percent% × sisa setelah DP1
+-- Pelunasan = sisa setelah DP1 & DP2 (otomatis).
+-- Nilai awal mengikuti rumus lama: 30%, min Rp300.000, max Rp500.000, DP2 30%.
+CREATE TABLE IF NOT EXISTS reservation_deposit_settings (
+  id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  dp1_percent numeric(5,2) NOT NULL DEFAULT 30 CHECK (dp1_percent >= 0 AND dp1_percent <= 100),
+  dp1_min_idr bigint NOT NULL DEFAULT 300000 CHECK (dp1_min_idr >= 0),
+  dp1_max_idr bigint NOT NULL DEFAULT 500000 CHECK (dp1_max_idr >= 0),
+  dp2_percent numeric(5,2) NOT NULL DEFAULT 30 CHECK (dp2_percent >= 0 AND dp2_percent <= 100),
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reservation_deposit_settings_range_ck CHECK (dp1_min_idr <= dp1_max_idr)
+);
+INSERT INTO reservation_deposit_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.reservation_deposit_settings (
+  id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  dp1_percent numeric(5,2) NOT NULL DEFAULT 30 CHECK (dp1_percent >= 0 AND dp1_percent <= 100),
+  dp1_min_idr bigint NOT NULL DEFAULT 300000 CHECK (dp1_min_idr >= 0),
+  dp1_max_idr bigint NOT NULL DEFAULT 500000 CHECK (dp1_max_idr >= 0),
+  dp2_percent numeric(5,2) NOT NULL DEFAULT 30 CHECK (dp2_percent >= 0 AND dp2_percent <= 100),
+  updated_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reservation_deposit_settings_range_ck CHECK (dp1_min_idr <= dp1_max_idr)
+);
+INSERT INTO public.reservation_deposit_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Riwayat perubahan status + catatan staff (untuk notifikasi & jejak audit).
+CREATE TABLE IF NOT EXISTS reservation_status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id uuid NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  from_status text,
+  to_status text NOT NULL,
+  note text,
+  actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS reservation_status_history_res_idx ON reservation_status_history(reservation_id, created_at DESC);
+
+-- Migrasi idempoten untuk instalasi lama (kolom DP & riwayat status).
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_amount_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_proof_url text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_proof_storage_key text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_paid_at timestamptz;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_note text;
+-- Sewa ruangan + DP 3 tahap (DP1 sudah ada di kolom deposit_*).
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS area_price_per_hour_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS total_estimate_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_amount_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_proof_url text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_proof_storage_key text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_paid_at timestamptz;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit2_note text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_amount_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_proof_url text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_proof_storage_key text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_paid_at timestamptz;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS settlement_note text;
+-- Pemecahan total: sewa ruangan + order menu (makanan/minuman). DP dihitung
+-- dari total gabungan, jadi uang muka ikut menutup menu yang dipesan.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS room_total_idr bigint;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS menu_total_idr bigint;
+-- Kontak pelanggan saat reservasi (nama & nomor telepon yang diisi di form).
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS contact_name text;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS contact_phone text;
+-- Order menu yang menyertai reservasi (makanan/minuman).
+CREATE TABLE IF NOT EXISTS reservation_menu_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id uuid NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  product_id uuid,
+  variant_id uuid,
+  product_name text NOT NULL,
+  variant_name text,
+  quantity smallint NOT NULL CHECK (quantity > 0),
+  unit_price_idr bigint NOT NULL,
+  modifiers_total_idr bigint NOT NULL DEFAULT 0,
+  line_total_idr bigint NOT NULL,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS reservation_menu_items_res_idx ON reservation_menu_items(reservation_id);
+CREATE TABLE IF NOT EXISTS reservation_status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id uuid NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  from_status text,
+  to_status text NOT NULL,
+  note text,
+  actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS reservation_status_history_res_idx ON reservation_status_history(reservation_id, created_at DESC);
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_amount_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_proof_url text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_proof_storage_key text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_paid_at timestamptz;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit_note text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS area_price_per_hour_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS total_estimate_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_amount_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_proof_url text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_proof_storage_key text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_paid_at timestamptz;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS deposit2_note text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_amount_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_proof_url text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_proof_storage_key text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_paid_at timestamptz;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS settlement_note text;
+-- Pemecahan total: sewa ruangan + order menu (makanan/minuman).
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS room_total_idr bigint;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS menu_total_idr bigint;
+-- Kontak pelanggan saat reservasi (nama & nomor telepon yang diisi di form).
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS contact_name text;
+ALTER TABLE public.reservations ADD COLUMN IF NOT EXISTS contact_phone text;
+-- Order menu reservasi — salinan di schema `public` (runtime app memakai
+-- search_path default → public).
+CREATE TABLE IF NOT EXISTS public.reservation_menu_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id uuid NOT NULL REFERENCES public.reservations(id) ON DELETE CASCADE,
+  product_id uuid,
+  variant_id uuid,
+  product_name text NOT NULL,
+  variant_name text,
+  quantity smallint NOT NULL CHECK (quantity > 0),
+  unit_price_idr bigint NOT NULL,
+  modifiers_total_idr bigint NOT NULL DEFAULT 0,
+  line_total_idr bigint NOT NULL,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS reservation_menu_items_res_public_idx ON public.reservation_menu_items(reservation_id);
+CREATE TABLE IF NOT EXISTS public.reservation_status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id uuid NOT NULL REFERENCES public.reservations(id) ON DELETE CASCADE,
+  from_status text,
+  to_status text NOT NULL,
+  note text,
+  actor_user_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS reservation_status_history_res_public_idx ON public.reservation_status_history(reservation_id, created_at DESC);
+
+-- Migrasi idempoten: email cabang + pembayaran DP reservasi (Midtrans).
+ALTER TABLE branches ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE public.branches ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE public.branches ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE public.payment_transactions ADD COLUMN IF NOT EXISTS event_booking_id uuid;
+ALTER TABLE public.payment_transactions ADD COLUMN IF NOT EXISTS reservation_id uuid;
+ALTER TABLE public.payment_transactions ADD COLUMN IF NOT EXISTS payment_stage text;
+ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS payment_stage text;
+ALTER TABLE public.payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_exactly_one_parent_ck;
+ALTER TABLE public.payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_purpose_parent_ck;
+ALTER TABLE public.payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_payment_purpose_check;
+ALTER TABLE public.payment_transactions
+  ADD CONSTRAINT payment_transactions_payment_purpose_check
+    CHECK (payment_purpose IN ('order','event_deposit','event_installment','event_final','event_refund','reservation_deposit'));
+ALTER TABLE public.payment_transactions
+  ADD CONSTRAINT payment_transactions_exactly_one_parent_ck
+    CHECK (num_nonnulls(order_id, event_booking_id, reservation_id) = 1),
+  ADD CONSTRAINT payment_transactions_purpose_parent_ck
+    CHECK ((order_id IS NOT NULL AND payment_purpose = 'order') OR
+           (event_booking_id IS NOT NULL AND payment_purpose <> 'order') OR
+           (reservation_id IS NOT NULL AND payment_purpose = 'reservation_deposit'));
+CREATE INDEX IF NOT EXISTS payment_transactions_reservation_public_idx ON public.payment_transactions(reservation_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS reservation_tables (
   reservation_id uuid NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
   table_id uuid NOT NULL REFERENCES cafe_tables(id) ON DELETE RESTRICT,
   PRIMARY KEY (reservation_id, table_id)
 );
+-- Reservasi per-ruangan: satu reservasi bisa memesan beberapa area (ruangan).
+CREATE TABLE IF NOT EXISTS reservation_rooms (
+  reservation_id uuid NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  area_id uuid NOT NULL REFERENCES dining_areas(id) ON DELETE RESTRICT,
+  PRIMARY KEY (reservation_id, area_id)
+);
+CREATE INDEX IF NOT EXISTS reservation_rooms_area_idx ON reservation_rooms(area_id);
+CREATE TABLE IF NOT EXISTS public.reservation_rooms (
+  reservation_id uuid NOT NULL REFERENCES public.reservations(id) ON DELETE CASCADE,
+  area_id uuid NOT NULL REFERENCES public.dining_areas(id) ON DELETE RESTRICT,
+  PRIMARY KEY (reservation_id, area_id)
+);
+CREATE INDEX IF NOT EXISTS reservation_rooms_area_public_idx ON public.reservation_rooms(area_id);
 
 -- -----------------------------------------------------------------------------
 -- Events, party packages and per-person catering/buffet packages
 -- -----------------------------------------------------------------------------
-CREATE TABLE event_packages (
+CREATE TABLE IF NOT EXISTS event_packages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -597,7 +852,7 @@ CREATE TABLE event_packages (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE catering_packages (
+CREATE TABLE IF NOT EXISTS catering_packages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -611,7 +866,7 @@ CREATE TABLE catering_packages (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE event_bookings (
+CREATE TABLE IF NOT EXISTS event_bookings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   booking_number text NOT NULL UNIQUE,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -632,15 +887,26 @@ CREATE TABLE event_bookings (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (ends_at IS NULL OR ends_at > starts_at)
 );
+-- Pembayaran DP reservasi: transaksi bisa terkait order, event, atau reservasi.
 ALTER TABLE payment_transactions
-  ADD COLUMN event_booking_id uuid REFERENCES event_bookings(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS event_booking_id uuid REFERENCES event_bookings(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS reservation_id uuid REFERENCES reservations(id) ON DELETE RESTRICT;
+ALTER TABLE payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_exactly_one_parent_ck;
+ALTER TABLE payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_purpose_parent_ck;
+ALTER TABLE payment_transactions
   ADD CONSTRAINT payment_transactions_exactly_one_parent_ck
-    CHECK (num_nonnulls(order_id, event_booking_id) = 1),
+    CHECK (num_nonnulls(order_id, event_booking_id, reservation_id) = 1),
   ADD CONSTRAINT payment_transactions_purpose_parent_ck
     CHECK ((order_id IS NOT NULL AND payment_purpose = 'order') OR
-           (event_booking_id IS NOT NULL AND payment_purpose <> 'order'));
-CREATE INDEX event_bookings_branch_date_idx ON event_bookings(branch_id, starts_at, status);
-CREATE TABLE event_booking_catering (
+           (event_booking_id IS NOT NULL AND payment_purpose <> 'order') OR
+           (reservation_id IS NOT NULL AND payment_purpose = 'reservation_deposit'));
+ALTER TABLE payment_transactions DROP CONSTRAINT IF EXISTS payment_transactions_payment_purpose_check;
+ALTER TABLE payment_transactions
+  ADD CONSTRAINT payment_transactions_payment_purpose_check
+    CHECK (payment_purpose IN ('order','event_deposit','event_installment','event_final','event_refund','reservation_deposit'));
+CREATE INDEX IF NOT EXISTS payment_transactions_reservation_idx ON payment_transactions(reservation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS event_bookings_branch_date_idx ON event_bookings(branch_id, starts_at, status);
+CREATE TABLE IF NOT EXISTS event_booking_catering (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   event_booking_id uuid NOT NULL REFERENCES event_bookings(id) ON DELETE CASCADE,
   catering_package_id uuid REFERENCES catering_packages(id) ON DELETE SET NULL,
@@ -649,7 +915,7 @@ CREATE TABLE event_booking_catering (
   guest_count integer NOT NULL CHECK (guest_count > 0),
   line_total_idr bigint NOT NULL CHECK (line_total_idr = price_per_person_snapshot_idr * guest_count)
 );
-CREATE TABLE event_booking_addons (
+CREATE TABLE IF NOT EXISTS event_booking_addons (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   event_booking_id uuid NOT NULL REFERENCES event_bookings(id) ON DELETE CASCADE,
   name text NOT NULL,
@@ -657,10 +923,41 @@ CREATE TABLE event_booking_addons (
   unit_price_idr bigint NOT NULL CHECK (unit_price_idr >= 0),
   line_total_idr bigint NOT NULL CHECK (line_total_idr = quantity * unit_price_idr)
 );
+-- Agenda event internal (Ramadan, Lebaran, promo musiman, dsb). Ditampilkan di
+-- panel admin sebagai penanda tanggal; boleh tumpang tindih antar event.
+CREATE TABLE IF NOT EXISTS event_agenda (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  description text,
+  starts_on date NOT NULL,
+  ends_on date NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (ends_on >= starts_on)
+);
+CREATE INDEX IF NOT EXISTS event_agenda_dates_idx ON event_agenda(starts_on, ends_on);
+CREATE INDEX IF NOT EXISTS event_agenda_active_idx ON event_agenda(is_active, starts_on);
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.event_agenda (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  description text,
+  starts_on date NOT NULL,
+  ends_on date NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (ends_on >= starts_on)
+);
+CREATE INDEX IF NOT EXISTS event_agenda_dates_public_idx ON public.event_agenda(starts_on, ends_on);
+CREATE INDEX IF NOT EXISTS event_agenda_active_public_idx ON public.event_agenda(is_active, starts_on);
 -- -----------------------------------------------------------------------------
 -- Inventory ledger and recipes (quantities stored in each ingredient's base unit)
 -- -----------------------------------------------------------------------------
-CREATE TABLE ingredients (
+CREATE TABLE IF NOT EXISTS ingredients (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   sku text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -670,20 +967,37 @@ CREATE TABLE ingredients (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE recipes (
+CREATE TABLE IF NOT EXISTS recipes (
   product_variant_id uuid NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
   ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
   quantity_in_base_unit numeric(14,3) NOT NULL CHECK (quantity_in_base_unit > 0),
   expected_waste_percent numeric(5,2) NOT NULL DEFAULT 0 CHECK (expected_waste_percent BETWEEN 0 AND 100),
   PRIMARY KEY (product_variant_id, ingredient_id)
 );
-CREATE TABLE stock_locations (
+CREATE TABLE IF NOT EXISTS stock_locations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
   name text NOT NULL,
-  UNIQUE (branch_id, name)
+  UNIQUE (name)
 );
-CREATE TABLE inventory_movements (
+
+-- Lokasi stok mandiri (tidak terikat cabang)
+ALTER TABLE stock_locations DROP CONSTRAINT IF EXISTS stock_locations_branch_id_fkey;
+ALTER TABLE stock_locations DROP CONSTRAINT IF EXISTS stock_locations_branch_id_name_key;
+ALTER TABLE stock_locations DROP COLUMN IF EXISTS branch_id;
+CREATE UNIQUE INDEX IF NOT EXISTS stock_locations_name_key ON stock_locations(name);
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.stock_locations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  UNIQUE (name)
+);
+ALTER TABLE public.stock_locations DROP CONSTRAINT IF EXISTS stock_locations_branch_id_fkey;
+ALTER TABLE public.stock_locations DROP CONSTRAINT IF EXISTS stock_locations_branch_id_name_key;
+ALTER TABLE public.stock_locations DROP COLUMN IF EXISTS branch_id;
+CREATE UNIQUE INDEX IF NOT EXISTS stock_locations_name_key ON public.stock_locations(name);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   stock_location_id uuid NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
   ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
@@ -692,15 +1006,426 @@ CREATE TABLE inventory_movements (
   reference_type text,
   reference_id uuid,
   notes text,
+  movement_date date NOT NULL DEFAULT CURRENT_DATE,
   created_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX inventory_movements_stock_idx ON inventory_movements(stock_location_id, ingredient_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS inventory_movements_stock_idx ON inventory_movements(stock_location_id, ingredient_id, created_at DESC);
+ALTER TABLE inventory_movements ADD COLUMN IF NOT EXISTS movement_date date;
+UPDATE inventory_movements
+   SET movement_date = (created_at AT TIME ZONE 'Asia/Jakarta')::date
+ WHERE movement_date IS NULL;
+ALTER TABLE inventory_movements ALTER COLUMN movement_date SET DEFAULT CURRENT_DATE;
+CREATE INDEX IF NOT EXISTS inventory_movements_date_idx ON inventory_movements(movement_date DESC);
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+ALTER TABLE public.inventory_movements ADD COLUMN IF NOT EXISTS movement_date date;
+UPDATE public.inventory_movements
+   SET movement_date = (created_at AT TIME ZONE 'Asia/Jakarta')::date
+  WHERE movement_date IS NULL;
+ALTER TABLE public.inventory_movements ALTER COLUMN movement_date SET DEFAULT CURRENT_DATE;
+CREATE INDEX IF NOT EXISTS inventory_movements_date_public_idx ON public.inventory_movements(movement_date DESC);
+
+-- Harga beli terakhir per bahan (dipakai sebagai default harga PO berikutnya).
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_purchase_price_idr bigint NOT NULL DEFAULT 0;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_purchase_price_idr bigint NOT NULL DEFAULT 0;
+
+-- -----------------------------------------------------------------------------
+-- Stok keluar (transfer gudang → outlet) dan stok opname
+-- Dokumen draft belum mengubah stok; posting menerapkan mutasi secara atomik.
+-- -----------------------------------------------------------------------------
+CREATE SEQUENCE IF NOT EXISTS stock_out_number_seq;
+CREATE SEQUENCE IF NOT EXISTS stock_opname_number_seq;
+
+CREATE TABLE IF NOT EXISTS stock_out_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  from_stock_location_id uuid NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+  to_stock_location_id uuid NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted','cancelled')),
+  transfer_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  cancel_reason text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (from_stock_location_id <> to_stock_location_id)
+);
+CREATE INDEX IF NOT EXISTS stock_out_documents_date_idx ON stock_out_documents(transfer_date DESC);
+CREATE INDEX IF NOT EXISTS stock_out_documents_status_idx ON stock_out_documents(status);
+CREATE INDEX IF NOT EXISTS stock_out_documents_locations_idx ON stock_out_documents(from_stock_location_id, to_stock_location_id);
+
+CREATE TABLE IF NOT EXISTS stock_out_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  stock_out_id uuid NOT NULL REFERENCES stock_out_documents(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (stock_out_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS stock_out_items_document_idx ON stock_out_items(stock_out_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS stock_opname_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  stock_location_id uuid NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted','cancelled')),
+  opname_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  cancel_reason text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_date_idx ON stock_opname_documents(opname_date DESC);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_status_idx ON stock_opname_documents(status);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_location_idx ON stock_opname_documents(stock_location_id);
+
+CREATE TABLE IF NOT EXISTS stock_opname_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  stock_opname_id uuid NOT NULL REFERENCES stock_opname_documents(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
+  system_quantity numeric(14,3) NOT NULL DEFAULT 0,
+  counted_quantity numeric(14,3) NOT NULL CHECK (counted_quantity >= 0),
+  difference_quantity numeric(14,3) NOT NULL DEFAULT 0,
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (stock_opname_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS stock_opname_items_document_idx ON stock_opname_items(stock_opname_id, sort_order);
+
+DROP TRIGGER IF EXISTS stock_out_documents_updated_at ON stock_out_documents;
+CREATE TRIGGER stock_out_documents_updated_at BEFORE UPDATE ON stock_out_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS stock_opname_documents_updated_at ON stock_opname_documents;
+CREATE TRIGGER stock_opname_documents_updated_at BEFORE UPDATE ON stock_opname_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE SEQUENCE IF NOT EXISTS public.stock_out_number_seq;
+CREATE SEQUENCE IF NOT EXISTS public.stock_opname_number_seq;
+
+CREATE TABLE IF NOT EXISTS public.stock_out_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  from_stock_location_id uuid NOT NULL REFERENCES public.stock_locations(id) ON DELETE RESTRICT,
+  to_stock_location_id uuid NOT NULL REFERENCES public.stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted','cancelled')),
+  transfer_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  cancel_reason text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (from_stock_location_id <> to_stock_location_id)
+);
+CREATE INDEX IF NOT EXISTS stock_out_documents_date_public_idx ON public.stock_out_documents(transfer_date DESC);
+CREATE INDEX IF NOT EXISTS stock_out_documents_status_public_idx ON public.stock_out_documents(status);
+CREATE INDEX IF NOT EXISTS stock_out_documents_locations_public_idx ON public.stock_out_documents(from_stock_location_id, to_stock_location_id);
+
+CREATE TABLE IF NOT EXISTS public.stock_out_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  stock_out_id uuid NOT NULL REFERENCES public.stock_out_documents(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES public.ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (stock_out_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS stock_out_items_document_public_idx ON public.stock_out_items(stock_out_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS public.stock_opname_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  stock_location_id uuid NOT NULL REFERENCES public.stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted','cancelled')),
+  opname_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  cancel_reason text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_date_public_idx ON public.stock_opname_documents(opname_date DESC);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_status_public_idx ON public.stock_opname_documents(status);
+CREATE INDEX IF NOT EXISTS stock_opname_documents_location_public_idx ON public.stock_opname_documents(stock_location_id);
+
+CREATE TABLE IF NOT EXISTS public.stock_opname_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  stock_opname_id uuid NOT NULL REFERENCES public.stock_opname_documents(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES public.ingredients(id) ON DELETE RESTRICT,
+  system_quantity numeric(14,3) NOT NULL DEFAULT 0,
+  counted_quantity numeric(14,3) NOT NULL CHECK (counted_quantity >= 0),
+  difference_quantity numeric(14,3) NOT NULL DEFAULT 0,
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (stock_opname_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS stock_opname_items_document_public_idx ON public.stock_opname_items(stock_opname_id, sort_order);
+
+DROP TRIGGER IF EXISTS stock_out_documents_updated_at ON public.stock_out_documents;
+CREATE TRIGGER stock_out_documents_updated_at BEFORE UPDATE ON public.stock_out_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS stock_opname_documents_updated_at ON public.stock_opname_documents;
+CREATE TRIGGER stock_opname_documents_updated_at BEFORE UPDATE ON public.stock_opname_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Purchasing: supplier master, purchase orders, goods receipts, supplier payments
+-- Nilai uang integer rupiah; kuantitas mengikuti satuan dasar bahan.
+-- -----------------------------------------------------------------------------
+CREATE SEQUENCE IF NOT EXISTS supplier_code_seq;
+CREATE SEQUENCE IF NOT EXISTS purchase_order_number_seq;
+CREATE SEQUENCE IF NOT EXISTS goods_receipt_number_seq;
+
+CREATE TABLE IF NOT EXISTS suppliers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  contact_name text,
+  phone text,
+  email text,
+  address text,
+  notes text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  supplier_id uuid NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  branch_id uuid REFERENCES branches(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','ordered','partial','received','cancelled')),
+  payment_status text NOT NULL DEFAULT 'unpaid'
+    CHECK (payment_status IN ('unpaid','partial','paid')),
+  order_date date NOT NULL DEFAULT CURRENT_DATE,
+  expected_date date,
+  due_date date,
+  subtotal_idr bigint NOT NULL DEFAULT 0 CHECK (subtotal_idr >= 0),
+  discount_idr bigint NOT NULL DEFAULT 0 CHECK (discount_idr >= 0),
+  tax_idr bigint NOT NULL DEFAULT 0 CHECK (tax_idr >= 0),
+  total_idr bigint NOT NULL DEFAULT 0 CHECK (total_idr >= 0),
+  paid_amount_idr bigint NOT NULL DEFAULT 0 CHECK (paid_amount_idr >= 0),
+  notes text,
+  cancel_reason text,
+  confirmed_at timestamptz,
+  received_at timestamptz,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS purchase_orders_supplier_idx ON purchase_orders(supplier_id, order_date DESC);
+CREATE INDEX IF NOT EXISTS purchase_orders_status_idx ON purchase_orders(status, payment_status);
+CREATE INDEX IF NOT EXISTS purchase_orders_date_idx ON purchase_orders(order_date DESC);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchase_order_id uuid NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  quantity_received numeric(14,3) NOT NULL DEFAULT 0 CHECK (quantity_received >= 0),
+  unit_price_idr bigint NOT NULL DEFAULT 0 CHECK (unit_price_idr >= 0),
+  line_total_idr bigint NOT NULL DEFAULT 0 CHECK (line_total_idr >= 0),
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (purchase_order_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS purchase_order_items_po_idx ON purchase_order_items(purchase_order_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS goods_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  purchase_order_id uuid NOT NULL REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+  stock_location_id uuid NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'posted' CHECK (status IN ('draft','posted','cancelled')),
+  received_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS goods_receipts_po_idx ON goods_receipts(purchase_order_id, received_date DESC);
+CREATE INDEX IF NOT EXISTS goods_receipts_date_idx ON goods_receipts(received_date DESC);
+CREATE INDEX IF NOT EXISTS goods_receipts_status_idx ON goods_receipts(status);
+
+CREATE TABLE IF NOT EXISTS goods_receipt_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  goods_receipt_id uuid NOT NULL REFERENCES goods_receipts(id) ON DELETE CASCADE,
+  purchase_order_item_id uuid NOT NULL REFERENCES purchase_order_items(id) ON DELETE RESTRICT,
+  ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  unit_price_idr bigint NOT NULL DEFAULT 0 CHECK (unit_price_idr >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (goods_receipt_id, purchase_order_item_id)
+);
+CREATE INDEX IF NOT EXISTS goods_receipt_items_receipt_idx ON goods_receipt_items(goods_receipt_id);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchase_order_id uuid NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  amount_idr bigint NOT NULL CHECK (amount_idr > 0),
+  paid_at date NOT NULL DEFAULT CURRENT_DATE,
+  method text NOT NULL DEFAULT 'transfer' CHECK (method IN ('transfer','cash','qris','other')),
+  reference text,
+  proof_url text,
+  notes text,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS supplier_payments_po_idx ON supplier_payments(purchase_order_id, paid_at DESC);
+CREATE INDEX IF NOT EXISTS supplier_payments_date_idx ON supplier_payments(paid_at DESC);
+
+DROP TRIGGER IF EXISTS suppliers_updated_at ON suppliers;
+CREATE TRIGGER suppliers_updated_at BEFORE UPDATE ON suppliers
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS purchase_orders_updated_at ON purchase_orders;
+CREATE TRIGGER purchase_orders_updated_at BEFORE UPDATE ON purchase_orders
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS goods_receipts_updated_at ON goods_receipts;
+CREATE TRIGGER goods_receipts_updated_at BEFORE UPDATE ON goods_receipts
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE SEQUENCE IF NOT EXISTS public.supplier_code_seq;
+CREATE SEQUENCE IF NOT EXISTS public.purchase_order_number_seq;
+CREATE SEQUENCE IF NOT EXISTS public.goods_receipt_number_seq;
+
+CREATE TABLE IF NOT EXISTS public.suppliers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  contact_name text,
+  phone text,
+  email text,
+  address text,
+  notes text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.purchase_orders (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  supplier_id uuid NOT NULL REFERENCES public.suppliers(id) ON DELETE RESTRICT,
+  branch_id uuid REFERENCES public.branches(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','ordered','partial','received','cancelled')),
+  payment_status text NOT NULL DEFAULT 'unpaid'
+    CHECK (payment_status IN ('unpaid','partial','paid')),
+  order_date date NOT NULL DEFAULT CURRENT_DATE,
+  expected_date date,
+  due_date date,
+  subtotal_idr bigint NOT NULL DEFAULT 0 CHECK (subtotal_idr >= 0),
+  discount_idr bigint NOT NULL DEFAULT 0 CHECK (discount_idr >= 0),
+  tax_idr bigint NOT NULL DEFAULT 0 CHECK (tax_idr >= 0),
+  total_idr bigint NOT NULL DEFAULT 0 CHECK (total_idr >= 0),
+  paid_amount_idr bigint NOT NULL DEFAULT 0 CHECK (paid_amount_idr >= 0),
+  notes text,
+  cancel_reason text,
+  confirmed_at timestamptz,
+  received_at timestamptz,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS purchase_orders_supplier_public_idx ON public.purchase_orders(supplier_id, order_date DESC);
+CREATE INDEX IF NOT EXISTS purchase_orders_status_public_idx ON public.purchase_orders(status, payment_status);
+CREATE INDEX IF NOT EXISTS purchase_orders_date_public_idx ON public.purchase_orders(order_date DESC);
+
+CREATE TABLE IF NOT EXISTS public.purchase_order_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchase_order_id uuid NOT NULL REFERENCES public.purchase_orders(id) ON DELETE CASCADE,
+  ingredient_id uuid NOT NULL REFERENCES public.ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  quantity_received numeric(14,3) NOT NULL DEFAULT 0 CHECK (quantity_received >= 0),
+  unit_price_idr bigint NOT NULL DEFAULT 0 CHECK (unit_price_idr >= 0),
+  line_total_idr bigint NOT NULL DEFAULT 0 CHECK (line_total_idr >= 0),
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (purchase_order_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS purchase_order_items_po_public_idx ON public.purchase_order_items(purchase_order_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS public.goods_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE,
+  purchase_order_id uuid NOT NULL REFERENCES public.purchase_orders(id) ON DELETE RESTRICT,
+  stock_location_id uuid NOT NULL REFERENCES public.stock_locations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'posted' CHECK (status IN ('draft','posted','cancelled')),
+  received_date date NOT NULL DEFAULT CURRENT_DATE,
+  notes text,
+  posted_at timestamptz,
+  posted_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS goods_receipts_po_public_idx ON public.goods_receipts(purchase_order_id, received_date DESC);
+CREATE INDEX IF NOT EXISTS goods_receipts_date_public_idx ON public.goods_receipts(received_date DESC);
+CREATE INDEX IF NOT EXISTS goods_receipts_status_public_idx ON public.goods_receipts(status);
+
+CREATE TABLE IF NOT EXISTS public.goods_receipt_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  goods_receipt_id uuid NOT NULL REFERENCES public.goods_receipts(id) ON DELETE CASCADE,
+  purchase_order_item_id uuid NOT NULL REFERENCES public.purchase_order_items(id) ON DELETE RESTRICT,
+  ingredient_id uuid NOT NULL REFERENCES public.ingredients(id) ON DELETE RESTRICT,
+  quantity numeric(14,3) NOT NULL CHECK (quantity > 0),
+  unit_price_idr bigint NOT NULL DEFAULT 0 CHECK (unit_price_idr >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (goods_receipt_id, purchase_order_item_id)
+);
+CREATE INDEX IF NOT EXISTS goods_receipt_items_receipt_public_idx ON public.goods_receipt_items(goods_receipt_id);
+
+CREATE TABLE IF NOT EXISTS public.supplier_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchase_order_id uuid NOT NULL REFERENCES public.purchase_orders(id) ON DELETE CASCADE,
+  amount_idr bigint NOT NULL CHECK (amount_idr > 0),
+  paid_at date NOT NULL DEFAULT CURRENT_DATE,
+  method text NOT NULL DEFAULT 'transfer' CHECK (method IN ('transfer','cash','qris','other')),
+  reference text,
+  proof_url text,
+  notes text,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS supplier_payments_po_public_idx ON public.supplier_payments(purchase_order_id, paid_at DESC);
+CREATE INDEX IF NOT EXISTS supplier_payments_date_public_idx ON public.supplier_payments(paid_at DESC);
+
+DROP TRIGGER IF EXISTS suppliers_updated_at ON public.suppliers;
+CREATE TRIGGER suppliers_updated_at BEFORE UPDATE ON public.suppliers
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+DROP TRIGGER IF EXISTS purchase_orders_updated_at ON public.purchase_orders;
+CREATE TRIGGER purchase_orders_updated_at BEFORE UPDATE ON public.purchase_orders
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+DROP TRIGGER IF EXISTS goods_receipts_updated_at ON public.goods_receipts;
+CREATE TRIGGER goods_receipts_updated_at BEFORE UPDATE ON public.goods_receipts
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
 -- Community moments, notifications, support chat, gamification and AI assistant
 -- -----------------------------------------------------------------------------
-CREATE TABLE semoet_moments (
+CREATE TABLE IF NOT EXISTS semoet_moments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   title text,
@@ -709,7 +1434,7 @@ CREATE TABLE semoet_moments (
   moderation_status text NOT NULL DEFAULT 'pending' CHECK (moderation_status IN ('pending','approved','rejected','hidden')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE semoet_moment_media (
+CREATE TABLE IF NOT EXISTS semoet_moment_media (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   moment_id uuid NOT NULL REFERENCES semoet_moments(id) ON DELETE CASCADE,
   storage_key text NOT NULL UNIQUE,
@@ -718,7 +1443,7 @@ CREATE TABLE semoet_moment_media (
   sort_order integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE notification_devices (
+CREATE TABLE IF NOT EXISTS notification_devices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   provider text NOT NULL CHECK (provider IN ('fcm','apns','web_push')),
@@ -727,7 +1452,7 @@ CREATE TABLE notification_devices (
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
 );
-CREATE TABLE notifications (
+CREATE TABLE IF NOT EXISTS notifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   channel text NOT NULL CHECK (channel IN ('in_app','push','email','sms')),
@@ -740,17 +1465,28 @@ CREATE TABLE notifications (
   read_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX notifications_user_recent_idx ON notifications(user_id, created_at DESC);
-CREATE TABLE chat_conversations (
+CREATE INDEX IF NOT EXISTS notifications_user_recent_idx ON notifications(user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS chat_conversations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   assigned_staff_id uuid REFERENCES users(id) ON DELETE SET NULL,
   topic text NOT NULL,
+  category text NOT NULL DEFAULT 'general' CHECK (category IN ('general','complaint')),
   status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','waiting','resolved','closed')),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE chat_messages (
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'general';
+ALTER TABLE chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_category_check;
+ALTER TABLE chat_conversations
+  ADD CONSTRAINT chat_conversations_category_check CHECK (category IN ('general','complaint'));
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+ALTER TABLE public.chat_conversations ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'general';
+ALTER TABLE public.chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_category_check;
+ALTER TABLE public.chat_conversations
+  ADD CONSTRAINT chat_conversations_category_check CHECK (category IN ('general','complaint'));
+CREATE TABLE IF NOT EXISTS chat_messages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id uuid NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
   sender_type text NOT NULL CHECK (sender_type IN ('customer','staff','assistant','system')),
@@ -760,8 +1496,17 @@ CREATE TABLE chat_messages (
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((sender_type IN ('customer','staff') AND sender_user_id IS NOT NULL) OR (sender_type IN ('assistant','system') AND sender_user_id IS NULL))
 );
-CREATE INDEX chat_messages_conversation_idx ON chat_messages(conversation_id, created_at);
-CREATE TABLE gamification_activities (
+CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(conversation_id, created_at);
+
+-- Penanda terkirim/dibaca (read receipt). `delivered_at` diisi saat penerima
+-- memuat thread, `read_at` saat pesan benar-benar tampil di layar penerima.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS delivered_at timestamptz;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS read_at timestamptz;
+
+-- Salinan di schema `public` (runtime backend memakai search_path default → public).
+ALTER TABLE IF EXISTS public.chat_messages ADD COLUMN IF NOT EXISTS delivered_at timestamptz;
+ALTER TABLE IF EXISTS public.chat_messages ADD COLUMN IF NOT EXISTS read_at timestamptz;
+CREATE TABLE IF NOT EXISTS gamification_activities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,
   name text NOT NULL,
@@ -771,7 +1516,7 @@ CREATE TABLE gamification_activities (
   ends_at timestamptz,
   is_active boolean NOT NULL DEFAULT true
 );
-CREATE TABLE gamification_rewards (
+CREATE TABLE IF NOT EXISTS gamification_rewards (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   activity_id uuid NOT NULL REFERENCES gamification_activities(id) ON DELETE CASCADE,
   reward_type text NOT NULL CHECK (reward_type IN ('points','voucher','free_product','none')),
@@ -779,7 +1524,7 @@ CREATE TABLE gamification_rewards (
   weight integer NOT NULL DEFAULT 1 CHECK (weight >= 0),
   config jsonb NOT NULL DEFAULT '{}'::jsonb
 );
-CREATE TABLE gamification_plays (
+CREATE TABLE IF NOT EXISTS gamification_plays (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   activity_id uuid NOT NULL REFERENCES gamification_activities(id) ON DELETE RESTRICT,
@@ -788,7 +1533,7 @@ CREATE TABLE gamification_plays (
   idempotency_key text UNIQUE,
   result jsonb NOT NULL DEFAULT '{}'::jsonb
 );
-CREATE TABLE ai_conversations (
+CREATE TABLE IF NOT EXISTS ai_conversations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   purpose text NOT NULL CHECK (purpose IN ('customer_support','admin_assistant')),
@@ -796,14 +1541,14 @@ CREATE TABLE ai_conversations (
   created_at timestamptz NOT NULL DEFAULT now(),
   closed_at timestamptz
 );
-CREATE TABLE ai_messages (
+CREATE TABLE IF NOT EXISTS ai_messages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id uuid NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
   role text NOT NULL CHECK (role IN ('user','assistant','tool')),
   content text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE ai_query_logs (
+CREATE TABLE IF NOT EXISTS ai_query_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id uuid REFERENCES ai_conversations(id) ON DELETE SET NULL,
   admin_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -818,7 +1563,7 @@ CREATE TABLE ai_query_logs (
 -- -----------------------------------------------------------------------------
 -- Audit and reporting foundations
 -- -----------------------------------------------------------------------------
-CREATE TABLE audit_logs (
+CREATE TABLE IF NOT EXISTS audit_logs (
   id bigserial PRIMARY KEY,
   actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   action text NOT NULL,
@@ -830,11 +1575,11 @@ CREATE TABLE audit_logs (
   ip_address inet,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX audit_logs_entity_idx ON audit_logs(entity_type, entity_id, created_at DESC);
-CREATE INDEX audit_logs_actor_idx ON audit_logs(actor_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_entity_idx ON audit_logs(entity_type, entity_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON audit_logs(actor_user_id, created_at DESC);
 
 -- Views provide dashboard aggregates without storing stale duplicate totals.
-CREATE VIEW daily_order_sales AS
+CREATE OR REPLACE VIEW daily_order_sales AS
 SELECT branch_id, (placed_at AT TIME ZONE 'Asia/Jakarta')::date AS business_date,
        count(*) FILTER (WHERE order_status <> 'cancelled') AS order_count,
        coalesce(sum(total_idr) FILTER (WHERE payment_status = 'paid' AND order_status <> 'cancelled'), 0) AS paid_sales_idr
@@ -842,22 +1587,197 @@ FROM orders
 GROUP BY branch_id, (placed_at AT TIME ZONE 'Asia/Jakarta')::date;
 
 -- Maintain updated_at consistently on mutable records.
+DROP TRIGGER IF EXISTS users_updated_at ON users;
 CREATE TRIGGER users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS customer_profiles_updated_at ON customer_profiles;
 CREATE TRIGGER customer_profiles_updated_at BEFORE UPDATE ON customer_profiles FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS user_addresses_updated_at ON user_addresses;
 CREATE TRIGGER user_addresses_updated_at BEFORE UPDATE ON user_addresses FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS branches_updated_at ON branches;
 CREATE TRIGGER branches_updated_at BEFORE UPDATE ON branches FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS products_updated_at ON products;
 CREATE TRIGGER products_updated_at BEFORE UPDATE ON products FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS product_variants_updated_at ON product_variants;
 CREATE TRIGGER product_variants_updated_at BEFORE UPDATE ON product_variants FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS orders_updated_at ON orders;
 CREATE TRIGGER orders_updated_at BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS payment_transactions_updated_at ON payment_transactions;
 CREATE TRIGGER payment_transactions_updated_at BEFORE UPDATE ON payment_transactions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS order_deliveries_updated_at ON order_deliveries;
 CREATE TRIGGER order_deliveries_updated_at BEFORE UPDATE ON order_deliveries FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS reviews_updated_at ON reviews;
 CREATE TRIGGER reviews_updated_at BEFORE UPDATE ON reviews FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS reservations_updated_at ON reservations;
 CREATE TRIGGER reservations_updated_at BEFORE UPDATE ON reservations FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS reservation_deposit_settings_updated_at ON reservation_deposit_settings;
+CREATE TRIGGER reservation_deposit_settings_updated_at BEFORE UPDATE ON reservation_deposit_settings FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS reservation_deposit_settings_updated_at ON public.reservation_deposit_settings;
+CREATE TRIGGER reservation_deposit_settings_updated_at BEFORE UPDATE ON public.reservation_deposit_settings FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS event_packages_updated_at ON event_packages;
 CREATE TRIGGER event_packages_updated_at BEFORE UPDATE ON event_packages FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS catering_packages_updated_at ON catering_packages;
 CREATE TRIGGER catering_packages_updated_at BEFORE UPDATE ON catering_packages FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS event_bookings_updated_at ON event_bookings;
 CREATE TRIGGER event_bookings_updated_at BEFORE UPDATE ON event_bookings FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS event_agenda_updated_at ON event_agenda;
+CREATE TRIGGER event_agenda_updated_at BEFORE UPDATE ON event_agenda FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS event_agenda_updated_at ON public.event_agenda;
+CREATE TRIGGER event_agenda_updated_at BEFORE UPDATE ON public.event_agenda FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS ingredients_updated_at ON ingredients;
 CREATE TRIGGER ingredients_updated_at BEFORE UPDATE ON ingredients FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS chat_conversations_updated_at ON chat_conversations;
 CREATE TRIGGER chat_conversations_updated_at BEFORE UPDATE ON chat_conversations FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Pengeluaran operasional (kategori sewa, utilitas, gaji, promosi, dll.)
+-- Nilai uang integer rupiah; bukan bagian dari perhitungan HPP produk.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  category text NOT NULL
+    CHECK (category IN ('bahan_baku','alat_alat_masak','kemasan','utilitas','sewa','gaji','pemasaran','transportasi','lainnya')),
+  name text NOT NULL DEFAULT '',
+  amount_idr bigint NOT NULL CHECK (amount_idr > 0),
+  note text,
+  expense_date date NOT NULL DEFAULT CURRENT_DATE,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS expenses_date_idx ON expenses(expense_date DESC);
+CREATE INDEX IF NOT EXISTS expenses_category_idx ON expenses(category, expense_date DESC);
+ALTER TABLE expenses ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  category text NOT NULL
+    CHECK (category IN ('bahan_baku','alat_alat_masak','kemasan','utilitas','sewa','gaji','pemasaran','transportasi','lainnya')),
+  name text NOT NULL DEFAULT '',
+  amount_idr bigint NOT NULL CHECK (amount_idr > 0),
+  note text,
+  expense_date date NOT NULL DEFAULT CURRENT_DATE,
+  created_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS expenses_date_public_idx ON public.expenses(expense_date DESC);
+CREATE INDEX IF NOT EXISTS expenses_category_public_idx ON public.expenses(category, expense_date DESC);
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';
+
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS due_date date;
+ALTER TABLE public.purchase_orders ADD COLUMN IF NOT EXISTS due_date date;
+CREATE INDEX IF NOT EXISTS purchase_orders_due_date_idx ON purchase_orders(due_date);
+CREATE INDEX IF NOT EXISTS purchase_orders_due_date_public_idx ON public.purchase_orders(due_date);
+
+-- -----------------------------------------------------------------------------
+-- Shift kasir
+-- Satu shift mewakili satu akun staf yang bertugas di satu cabang. Hanya boleh
+-- ada satu shift terbuka per cabang dan per akun staf pada waktu yang sama.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS shifts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE RESTRICT,
+  staff_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz,
+  planned_start_at timestamptz,
+  planned_end_at timestamptz,
+  opening_cash_idr bigint NOT NULL DEFAULT 0 CHECK (opening_cash_idr >= 0),
+  closing_cash_idr bigint CHECK (closing_cash_idr IS NULL OR closing_cash_idr >= 0),
+  notes text,
+  closing_notes text,
+  opened_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  closed_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (closed_at IS NULL OR closed_at >= opened_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_branch_idx
+  ON shifts(branch_id) WHERE status = 'open';
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_staff_idx
+  ON shifts(staff_user_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS shifts_branch_opened_idx
+  ON shifts(branch_id, opened_at DESC);
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.shifts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES public.branches(id) ON DELETE RESTRICT,
+  staff_user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz,
+  planned_start_at timestamptz,
+  planned_end_at timestamptz,
+  opening_cash_idr bigint NOT NULL DEFAULT 0 CHECK (opening_cash_idr >= 0),
+  closing_cash_idr bigint CHECK (closing_cash_idr IS NULL OR closing_cash_idr >= 0),
+  notes text,
+  closing_notes text,
+  opened_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  closed_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (closed_at IS NULL OR closed_at >= opened_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_branch_public_idx
+  ON public.shifts(branch_id) WHERE status = 'open';
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_one_open_per_staff_public_idx
+  ON public.shifts(staff_user_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS shifts_branch_opened_public_idx
+  ON public.shifts(branch_id, opened_at DESC);
+
+-- Kolom jam rencana untuk database yang sudah memiliki tabel shifts.
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS planned_start_at timestamptz;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS planned_end_at timestamptz;
+ALTER TABLE public.shifts ADD COLUMN IF NOT EXISTS planned_start_at timestamptz;
+ALTER TABLE public.shifts ADD COLUMN IF NOT EXISTS planned_end_at timestamptz;
+
+DROP TRIGGER IF EXISTS shifts_updated_at ON shifts;
+CREATE TRIGGER shifts_updated_at BEFORE UPDATE ON shifts
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS shifts_updated_at ON public.shifts;
+CREATE TRIGGER shifts_updated_at BEFORE UPDATE ON public.shifts
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Status buka/tutup toko per cabang
+-- `mode = auto` mengikuti branch_business_hours, sedangkan `open`/`closed`
+-- adalah override manual yang bertahan sampai diubah kembali.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS branch_store_status (
+  branch_id uuid PRIMARY KEY REFERENCES branches(id) ON DELETE CASCADE,
+  mode text NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto','open','closed')),
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Salinan di schema `public` (runtime app memakai search_path default → public).
+CREATE TABLE IF NOT EXISTS public.branch_store_status (
+  branch_id uuid PRIMARY KEY REFERENCES public.branches(id) ON DELETE CASCADE,
+  mode text NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto','open','closed')),
+  updated_by uuid REFERENCES public.users(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS branch_store_status_updated_at ON branch_store_status;
+CREATE TRIGGER branch_store_status_updated_at BEFORE UPDATE ON branch_store_status
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS branch_store_status_updated_at ON public.branch_store_status;
+CREATE TRIGGER branch_store_status_updated_at BEFORE UPDATE ON public.branch_store_status
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- Pastikan salinan public branch_business_hours tersedia untuk runtime yang
+-- memakai search_path default. Tabel ini sudah dipakai endpoint cabang.
+CREATE TABLE IF NOT EXISTS public.branch_business_hours (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES public.branches(id) ON DELETE CASCADE,
+  day_of_week smallint NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+  opens_at time NOT NULL,
+  closes_at time NOT NULL,
+  service_type text NOT NULL DEFAULT 'all' CHECK (service_type IN ('all','dine_in','pickup','delivery')),
+  UNIQUE (branch_id, day_of_week, service_type, opens_at)
+);
 
 -- Important application-side transaction rules:
 -- * Allocate order numbers and enforce reservation/table overlap atomically.

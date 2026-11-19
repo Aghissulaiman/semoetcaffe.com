@@ -27,6 +27,9 @@ export async function create(req: Request, res: Response): Promise<Response> {
     // Header Idempotency-Key lebih diprioritaskan daripada body.
     idempotencyKey: getIdempotencyKey(req),
     ipAddress: getIp(req),
+    // Kasir tetap boleh mencatat pesanan saat toko tutup; order pelanggan
+    // (web/app) ditolak bila toko sedang tutup.
+    isStaff: isStaffRequest(req),
   });
   return sendCreated(res, data);
 }

@@ -3,11 +3,19 @@ import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { verifyWebhookSignature } from '../config/rawBody.js';
 import type { PaymentPurpose, PaymentTransactionStatus } from '../config/constants.js';
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from '../errors/AppError.js';
+import {
+  badRequest,
+  conflict,
+  forbidden,
+  notFound,
+  unauthorized,
+  unprocessable,
+} from '../errors/AppError.js';
 import * as adminRepo from '../repositories/admin.repository.js';
 import * as eventRepo from '../repositories/event.repository.js';
 import * as orderRepo from '../repositories/order.repository.js';
 import * as paymentRepo from '../repositories/payment.repository.js';
+import * as reservationRepo from '../repositories/reservation.repository.js';
 import { formatIdr, roundIdr } from '../utils/money.js';
 import { buildPaginationMeta, parsePagination, type Pagination } from '../utils/pagination.js';
 import { iso, num, str, strOrNull } from '../utils/serialize.js';
@@ -91,6 +99,9 @@ export interface WebhookResult {
 // Helper shaping
 // --------------------------------------------------------------------------
 function shapePayment(row: Record<string, unknown>) {
+  const raw = (row.rawProviderData ?? row.raw_provider_data ?? null) as
+    | Record<string, unknown>
+    | null;
   return {
     id: str(row.id),
     orderId: strOrNull(row.orderId),
@@ -102,6 +113,14 @@ function shapePayment(row: Record<string, unknown>) {
     paymentPurpose: str(row.paymentPurpose),
     status: str(row.status),
     amountIdr: num(row.amountIdr),
+    amountReceivedIdr:
+      raw?.amountReceivedIdr === undefined || raw?.amountReceivedIdr === null
+        ? null
+        : num(raw.amountReceivedIdr),
+    changeIdr:
+      raw?.changeIdr === undefined || raw?.changeIdr === null
+        ? null
+        : num(raw.changeIdr),
     currency: str(row.currency, CURRENCY),
     paymentUrl: strOrNull(row.paymentUrl),
     expiresAt: iso(row.expiresAt),
@@ -166,6 +185,13 @@ async function assertPaymentAccess(
   if (eventBookingId) {
     const booking = await eventRepo.findBookingForUser(eventBookingId, userId);
     if (booking) return;
+  }
+
+  // Pembayaran DP reservasi: pemilik reservasi berhak mengakses transaksinya.
+  const reservationId = strOrNull(payment.reservationId);
+  if (reservationId) {
+    const reservation = await reservationRepo.findReservationById(reservationId);
+    if (reservation && str(reservation.userId) === userId) return;
   }
 
   throw notFound('Transaksi pembayaran', str(payment.id));
@@ -394,6 +420,141 @@ function channelForReplay(paymentMethod: string): PaymentInstructions['channel']
     default:
       return 'cash';
   }
+}
+
+// --------------------------------------------------------------------------
+// POST /admin/orders/:id/payments - pembayaran manual dari kasir
+// --------------------------------------------------------------------------
+export interface ManualPaymentInput {
+  paymentMethod: 'cash' | 'qris' | 'card' | 'bank_transfer';
+  amountReceivedIdr?: number;
+  note?: string;
+}
+
+export interface ManualPaymentAudit {
+  requestId?: string | null;
+  ipAddress?: string | null;
+}
+
+export async function recordManualPayment(
+  orderId: string,
+  input: ManualPaymentInput,
+  actorUserId: string,
+  audit: ManualPaymentAudit = {},
+) {
+  return withTransaction(async (tx) => {
+    const order = await orderRepo.lockOrderById(orderId, tx);
+    if (!order) throw notFound('Pesanan', orderId);
+
+    const orderStatus = str(order.orderStatus);
+    if (ORDER_CLOSED_STATUS.includes(orderStatus)) {
+      throw unprocessable(
+        `Pesanan berstatus '${orderStatus}' sudah final dan tidak bisa dibayar`,
+      );
+    }
+
+    const financials = await orderRepo.getOrderFinancials(orderId, tx);
+    const totalIdr = orderTotalIdr(financials);
+    const paidIdr = await paymentRepo.sumSucceededPayments(orderId, tx);
+    const refundedIdr = await paymentRepo.sumRefundedPayments(orderId, tx);
+    const outstandingIdr = Math.max(0, totalIdr - paidIdr + refundedIdr);
+
+    if (outstandingIdr <= 0) {
+      throw conflict('Pesanan ini sudah lunas');
+    }
+
+    const method = input.paymentMethod;
+    const requestedAmount = input.amountReceivedIdr;
+    const amountReceivedIdr =
+      method === 'cash'
+        ? roundIdr(requestedAmount ?? outstandingIdr)
+        : roundIdr(requestedAmount ?? outstandingIdr);
+
+    if (amountReceivedIdr < outstandingIdr) {
+      throw unprocessable(
+        `Nominal diterima kurang dari sisa tagihan (${formatIdr(outstandingIdr)})`,
+      );
+    }
+
+    const changeIdr = Math.max(0, amountReceivedIdr - outstandingIdr);
+    const rawProviderData = {
+      source: 'kasir',
+      amountReceivedIdr,
+      changeIdr,
+      cashierUserId: actorUserId,
+      note: input.note ?? null,
+    };
+
+    const inserted = await paymentRepo.insertPayment(
+      {
+        orderId,
+        provider: 'cashier',
+        paymentMethod: method,
+        idempotencyKey: `manual-${orderId}-${actorUserId}-${Date.now()}`,
+        transactionType: TRANSACTION_CHARGE,
+        paymentPurpose: 'order',
+        amountIdr: outstandingIdr,
+        rawProviderData,
+      },
+      tx,
+    );
+    const paymentId = str((inserted as unknown as Record<string, unknown> | null)?.id);
+
+    const updated = await paymentRepo.updatePaymentStatus(
+      paymentId,
+      {
+        status: 'succeeded',
+        paidAt: new Date(),
+        rawProviderData,
+      },
+      tx,
+    );
+
+    await orderRepo.updateOrderStatus(orderId, { paymentStatus: 'paid' }, tx);
+    await orderRepo.insertStatusHistory(
+      {
+        orderId,
+        fromStatus: orderStatus,
+        toStatus: orderStatus,
+        changedBy: actorUserId,
+        note: `Pembayaran ${method} diterima di kasir`,
+      },
+      tx,
+    );
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.order.payment.manual',
+        entityType: 'order',
+        entityId: orderId,
+        oldData: { paymentStatus: str(order.paymentStatus), paidIdr },
+        newData: {
+          paymentId,
+          paymentMethod: method,
+          amountIdr: outstandingIdr,
+          amountReceivedIdr,
+          changeIdr,
+        },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return {
+      payment: shapePayment((updated ?? inserted) as Record<string, unknown>),
+      order: {
+        id: orderId,
+        orderStatus,
+        paymentStatus: 'paid',
+        totalIdr,
+        paidIdr: paidIdr + outstandingIdr,
+        amountReceivedIdr,
+        changeIdr,
+      },
+    };
+  });
 }
 
 // --------------------------------------------------------------------------
@@ -844,6 +1005,67 @@ async function confirmEventBookingDeposit(
   return status;
 }
 
+/**
+ * Pembayaran DP reservasi sukses: tandai tahap DP `paid` + catat ke riwayat
+ * status supaya pelanggan menerima notifikasi pembayaran diterima.
+ *
+ * Tahap diambil dari kolom `payment_stage` pada transaksi:
+ *   deposit (DP1) → `deposit_*`
+ *   deposit2      → `deposit2_*`
+ *   settlement    → `settlement_*`
+ */
+async function markReservationDepositPaid(
+  payment: Record<string, unknown>,
+  tx: TransactionClient,
+): Promise<string | null> {
+  const reservationId = strOrNull(payment.reservationId);
+  if (!reservationId) return null;
+  if (str(payment.paymentPurpose) !== 'reservation_deposit') return null;
+
+  const reservation = await reservationRepo.findReservationById(reservationId, tx);
+  if (!reservation) return null;
+
+  const stage = strOrNull(payment.paymentStage) ?? 'deposit';
+  const prefix: '' | 'deposit2' | 'settlement' =
+    stage === 'deposit2' ? 'deposit2' : stage === 'settlement' ? 'settlement' : '';
+  const statusField = prefix === '' ? 'depositStatus' : prefix === 'deposit2' ? 'deposit2Status' : 'settlementStatus';
+
+  const currentStage = reservation[statusField] ? String(reservation[statusField]) : 'unpaid';
+  if (currentStage === 'paid') return currentStage;
+
+  const amountIdr = toIdr(payment.amountIdr);
+  await reservationRepo.updateReservationDepositStage(
+    reservationId,
+    prefix,
+    {
+      amountIdr: amountIdr > 0 ? amountIdr : null,
+      status: 'paid',
+      markPaid: true,
+    },
+    tx,
+  );
+
+  const stageLabel = prefix === '' ? 'DP1' : prefix === 'deposit2' ? 'DP2' : 'Pelunasan';
+  const currentStatus = reservation.status ? String(reservation.status) : null;
+  await reservationRepo.insertReservationStatusHistory(
+    {
+      reservationId,
+      fromStatus: currentStatus,
+      toStatus: currentStatus ?? 'requested',
+      note:
+        prefix === ''
+          ? `${stageLabel} dibayar via Midtrans (Rp${amountIdr.toLocaleString('id-ID')}). Menunggu konfirmasi staff sebelum DP2 dapat dibayar.`
+          : `${stageLabel} dibayar via Midtrans (Rp${amountIdr.toLocaleString('id-ID')})`,
+      actorUserId: null,
+    },
+    tx,
+  );
+
+  // Catatan: DP1 lunas TIDAK lagi otomatis mengonfirmasi reservasi. Staff harus
+  // menekan "Konfirmasi Reservasi" dulu; setelah itu barulah DP2 dapat dibayar.
+  return 'paid';
+}
+
 /** Refund sukses: status pembayaran order mengikuti agregat refund. */
 async function finalizeRefund(
   payment: Record<string, unknown>,
@@ -957,6 +1179,7 @@ async function applyProviderStatus(
     if (provider.status === 'succeeded') {
       await markOrderPaid(payment, tx);
       await confirmEventBookingDeposit(payment, tx);
+      await markReservationDepositPaid(payment, tx);
     }
 
     await adminRepo.insertAuditLog(
@@ -1029,6 +1252,7 @@ export async function simulatePaymentSuccess(
 
     const orderStatus = await markOrderPaid(row, tx);
     await confirmEventBookingDeposit(row, tx);
+    await markReservationDepositPaid(row, tx);
 
     await adminRepo.insertAuditLog(
       {

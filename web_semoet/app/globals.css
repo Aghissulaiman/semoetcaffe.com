@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/*
+ * Palet Semoet Cafe — putih dominan + cokelat sebagai aksen.
+ * Sumber kebenaran warna web (disinkronkan dari app_semoet_caffe/src/global.css).
+ */
+:root {
+  --coffee-espresso: #2a1a11;
+  --coffee-dark: #4a3323;
+  --coffee-brown: #6f4e37;
+  --coffee-caramel: #a9714b;
+  --coffee-gold: #c9a227;
+  --coffee-cream: #f1e4d5;
+  --coffee-milk: #fbf6ef;
+  --coffee-linen: #e8dccb;
+  --coffee-muted: #8a7565;
+  --coffee-danger: #b4442e;
+  --coffee-success: #3f7d58;
+  --coffee-warning: #d98324;
+
+  --background: #ffffff;
+  --foreground: #2a1a11;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --color-espresso: #2a1a11;
+  --color-brown: #6f4e37;
+  --color-brown-dark: #4a3323;
+  --color-caramel: #a9714b;
+  --color-gold: #c9a227;
+  --color-cream: #f1e4d5;
+  --color-milk: #fbf6ef;
+  --color-linen: #e8dccb;
+  --color-muted: #8a7565;
+
+  --color-primary: #6f4e37;
+  --color-primary-dark: #4a3323;
+  --color-primary-soft: #f5f0eb;
+  --color-accent: #c9a227;
+  --color-ink: #2a1a11;
+  --color-ink-soft: #6f4e37;
+  --color-line: #e8dccb;
+  --color-surface: #ffffff;
+  --color-canvas: #fbf6ef;
+  --color-danger: #b4442e;
+  --color-success: #3f7d58;
+  --color-warning: #d98324;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Sembunyikan scrollbar untuk baris chip/carousel tapi tetap bisa digeser. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Animasi masuk halus untuk sheet/dialog. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slide-up {
+  from {
+    transform: translateY(18px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.18s ease-out;
+}
+.animate-slide-up {
+  animation: slide-up 0.22s ease-out;
+}
+
+/* Fokus ring yang konsisten dengan tema. */
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  outline: 2px solid var(--coffee-brown);
+  outline-offset: 2px;
+}

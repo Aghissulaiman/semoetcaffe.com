@@ -1,9 +1,15 @@
 import { withTransaction, type TransactionClient } from '../config/database.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
-import { ORDER_CANCELLABLE_STATUS, type DiscountType, type OrderStatus } from '../config/constants.js';
+import {
+  ORDER_CANCELLABLE_STATUS,
+  ORDER_STATUS_FLOW,
+  type DiscountType,
+  type OrderStatus,
+} from '../config/constants.js';
 import { badRequest, conflict, notFound, unprocessable } from '../errors/AppError.js';
 import * as addressRepo from '../repositories/address.repository.js';
+import * as adminRepo from '../repositories/admin.repository.js';
 import * as branchRepo from '../repositories/branch.repository.js';
 import * as catalogRepo from '../repositories/catalog.repository.js';
 import * as deliveryRepo from '../repositories/delivery.repository.js';
@@ -12,6 +18,7 @@ import * as orderRepo from '../repositories/order.repository.js';
 import * as paymentRepo from '../repositories/payment.repository.js';
 import * as promoRepo from '../repositories/promo.repository.js';
 import * as userRepo from '../repositories/user.repository.js';
+import * as storeService from './store.service.js';
 import { generateOrderNumber, sha256 } from '../utils/codeGenerator.js';
 import {
   calculateDiscountAmount,
@@ -46,6 +53,30 @@ const POINTS_REFUND_IDEMPOTENCY_PREFIX = 'order-cancelled:';
 
 export interface CreateOrderOptions {
   idempotencyKey?: string | null;
+  ipAddress?: string | null;
+  /** Staf/kasir boleh membuat order walau toko sedang tutup. */
+  isStaff?: boolean;
+}
+
+export interface ListAdminOrderQuery {
+  page?: number;
+  limit?: number;
+  orderStatus?: string;
+  paymentStatus?: string;
+  branchId?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  sort?: 'recent' | 'oldest' | 'total_desc';
+}
+
+export interface AdminOrderStatusInput {
+  toStatus: OrderStatus;
+  note?: string;
+}
+
+export interface AuditContext {
+  requestId?: string | null;
   ipAddress?: string | null;
 }
 
@@ -186,6 +217,9 @@ function shapeStatusHistory(row: Record<string, unknown>) {
 }
 
 function shapePaymentBrief(row: Record<string, unknown>) {
+  const raw = (row.rawProviderData ?? row.raw_provider_data ?? null) as
+    | Record<string, unknown>
+    | null;
   return {
     id: str(row.id),
     provider: str(row.provider),
@@ -193,9 +227,73 @@ function shapePaymentBrief(row: Record<string, unknown>) {
     transactionType: str(row.transactionType),
     status: str(row.status),
     amountIdr: num(row.amountIdr),
+    amountReceivedIdr:
+      raw?.amountReceivedIdr === undefined || raw?.amountReceivedIdr === null
+        ? null
+        : num(raw.amountReceivedIdr),
+    changeIdr:
+      raw?.changeIdr === undefined || raw?.changeIdr === null
+        ? null
+        : num(raw.changeIdr),
     currency: str(row.currency, CURRENCY),
     paidAt: iso(row.paidAt),
     createdAt: iso(row.createdAt),
+  };
+}
+
+function shapeAdminOrderItem(row: Record<string, unknown>) {
+  const modifiers = Array.isArray(row.modifiers)
+    ? (row.modifiers as Record<string, unknown>[])
+    : [];
+  return {
+    id: str(row.id),
+    productId: strOrNull(row.productId),
+    variantId: strOrNull(row.variantId),
+    productName: str(row.productName),
+    variantName: str(row.variantName),
+    sku: strOrNull(row.sku),
+    quantity: num(row.quantity),
+    unitPriceIdr: num(row.unitPriceIdr),
+    modifiersTotalIdr: num(row.modifiersTotalIdr),
+    lineTotalIdr: num(row.lineTotalIdr),
+    itemStatus: str(row.itemStatus),
+    specialInstructions: strOrNull(row.specialInstructions),
+    modifiers: modifiers.map((modifier) => ({
+      id: strOrNull(modifier.id),
+      groupName: str(modifier.groupName),
+      optionName: str(modifier.optionName),
+      priceDeltaIdr: num(modifier.priceDeltaIdr),
+      quantity: num(modifier.quantity),
+    })),
+  };
+}
+
+function shapeAdminOrderSummary(row: Record<string, unknown>) {
+  const rawItems = Array.isArray(row.items)
+    ? (row.items as Record<string, unknown>[])
+    : [];
+  const latestPayment =
+    row.latestPayment && typeof row.latestPayment === 'object'
+      ? (row.latestPayment as Record<string, unknown>)
+      : null;
+
+  return {
+    ...shapeOrderSummary(row),
+    userId: strOrNull(row.userId),
+    userName: strOrNull(row.userName),
+    userPhone: strOrNull(row.userPhone),
+    // Jangan fallback ke user di sini: order walk-in milik staf bisa tanpa
+    // nama tamu, sedangkan order pelanggan memakai user_name sebagai nama.
+    // Frontend memilih fallback yang tepat berdasarkan konteks.
+    customerName:
+      strOrNull(row.customerName) ?? strOrNull(row.deliveryRecipientName),
+    customerPhone:
+      strOrNull(row.customerPhone) ?? strOrNull(row.deliveryRecipientPhone),
+    tableId: strOrNull(row.tableId),
+    tableCode: strOrNull(row.tableCode),
+    customerNotes: strOrNull(row.customerNotes),
+    items: rawItems.map(shapeAdminOrderItem),
+    latestPayment: latestPayment ? shapePaymentBrief(latestPayment) : null,
   };
 }
 
@@ -245,6 +343,17 @@ export async function createOrder(
       throw notFound('Cabang', input.branchId);
     }
 
+    // Order pelanggan ditolak saat toko tutup. Staf/kasir tetap bisa mencatat
+    // pesanan walk-in, misalnya untuk pesanan yang masuk sebelum tutup.
+    if (!opts.isStaff) {
+      const store = await storeService.getStore(input.branchId);
+      if (!store.isOpen) {
+        throw unprocessable(
+          'Toko sedang tutup. Silakan pesan lagi pada jam operasional.',
+        );
+      }
+    }
+
     // 2. Harga SELURUHNYA dihitung ulang dari variant + modifier. Nilai harga
     //    yang dikirim client tidak pernah dipakai.
     const items = await resolveOrderItems(input, tx);
@@ -258,11 +367,18 @@ export async function createOrder(
 
     // 4. Promo / voucher dihitung terhadap subtotal yang baru dihitung.
     const productIds = [...new Set(items.map((item) => item.productId))];
-    const discount = await resolveDiscount(input, userId, subtotalIdr, productIds, tx);
+    const discount = await resolveDiscount(input, userId, subtotalIdr, productIds, items, tx);
+    // Diskon manual dari kasir ditambahkan setelah promo otomatis, lalu
+    // dijepit agar total tidak pernah negatif.
+    const manualDiscountIdr = Math.min(
+      Math.max(0, Math.round(input.manualDiscountIdr ?? 0)),
+      Math.max(0, subtotalIdr - discount.discountIdr),
+    );
+    const totalDiscountIdr = Math.min(subtotalIdr, discount.discountIdr + manualDiscountIdr);
 
     const totals = calculateOrderTotals({
       subtotalIdr,
-      discountIdr: discount.discountIdr,
+      discountIdr: totalDiscountIdr,
       deliveryFeeIdr: input.fulfillmentType === 'delivery' ? env.DELIVERY_FEE_IDR : 0,
       // Biaya servis hanya berlaku untuk pesanan yang disajikan di tempat.
       serviceFeeIdr: input.fulfillmentType === 'dine_in' ? env.SERVICE_FEE_IDR : 0,
@@ -290,8 +406,10 @@ export async function createOrder(
         tableId: input.tableId ?? null,
         pickupAt: input.pickupAt ? parseDate(input.pickupAt) : null,
         addressId: deliveryAddress?.addressId ?? null,
-        deliveryRecipientName: deliveryAddress?.recipientName ?? null,
-        deliveryRecipientPhone: deliveryAddress?.recipientPhone ?? null,
+        deliveryRecipientName:
+          deliveryAddress?.recipientName ?? input.customerName ?? null,
+        deliveryRecipientPhone:
+          deliveryAddress?.recipientPhone ?? input.customerPhone ?? null,
         deliveryAddressSnapshot: deliveryAddress?.snapshot ?? null,
       },
       tx,
@@ -663,20 +781,171 @@ async function resolveDiscount(
   userId: string,
   subtotalIdr: number,
   productIds: string[],
+  items: ResolvedItem[],
   tx: TransactionClient,
 ): Promise<AppliedDiscount> {
   if (input.promoCode && input.voucherId) {
     throw badRequest('Gunakan promoCode atau voucherId, bukan keduanya sekaligus');
   }
 
+  // Diskon menu otomatis tetap berlaku sebagai harga menu, lalu voucher/promo
+  // code dihitung dari subtotal setelah diskon menu tersebut.
+  const auto = await computeAutoDiscount(userId, input.branchId, subtotalIdr, items, tx);
+  const effectiveSubtotalIdr = Math.max(0, subtotalIdr - auto.discountIdr);
+
   if (input.voucherId) {
-    return applyVoucher(input.voucherId, userId, input.branchId, subtotalIdr, productIds, tx);
+    const applied = await applyVoucher(
+      input.voucherId,
+      userId,
+      input.branchId,
+      effectiveSubtotalIdr,
+      productIds,
+      tx,
+    );
+    return {
+      ...applied,
+      discountIdr: Math.min(subtotalIdr, auto.discountIdr + applied.discountIdr),
+    };
   }
   if (input.promoCode) {
-    return applyPromoCode(input.promoCode, userId, input.branchId, subtotalIdr, productIds, tx);
+    const applied = await applyPromoCode(
+      input.promoCode,
+      userId,
+      input.branchId,
+      effectiveSubtotalIdr,
+      productIds,
+      tx,
+    );
+    return {
+      ...applied,
+      discountIdr: Math.min(subtotalIdr, auto.discountIdr + applied.discountIdr),
+    };
   }
 
-  return { promoId: null, voucherId: null, discountIdr: 0, promoName: null };
+  // Tanpa kode: catat pemakaian promo diskon menu (kuota & audit).
+  if (!auto.promo) return auto.empty;
+  return lockAutoDiscount(userId, auto, tx);
+}
+
+/** Diskon satu unit produk sesuai aturan promo diskon menu. */
+function autoUnitDiscount(promo: Record<string, unknown>, unitPriceIdr: number): number {
+  const unit = Math.max(0, Math.round(unitPriceIdr));
+  if (unit === 0) return 0;
+
+  let discount = 0;
+  if (str(promo.discountType) === 'percentage') {
+    discount = Math.round((unit * Math.min(100, Math.max(0, num(promo.discountValue)))) / 100);
+  } else if (str(promo.discountType) === 'fixed') {
+    discount = Math.max(0, Math.round(num(promo.discountValue)));
+  }
+
+  const maxPerUnit = nullableNum(promo.maximumDiscountIdr);
+  if (maxPerUnit !== null) discount = Math.min(discount, maxPerUnit);
+
+  return Math.min(unit, discount);
+}
+
+/**
+ * Promo diskon menu tidak memakai kode. Pilih promo aktif yang memberi
+ * diskon terbesar untuk item yang tercakup eligibility produk/kategori.
+ */
+interface AutoDiscount {
+  promo: Record<string, unknown> | null;
+  discountIdr: number;
+  empty: AppliedDiscount;
+}
+
+async function computeAutoDiscount(
+  userId: string,
+  branchId: string,
+  subtotalIdr: number,
+  items: ResolvedItem[],
+  tx: TransactionClient,
+): Promise<AutoDiscount> {
+  const empty: AppliedDiscount = {
+    promoId: null,
+    voucherId: null,
+    discountIdr: 0,
+    promoName: null,
+  };
+
+  const rows = await promoRepo.listActiveAutoPromos(tx);
+  if (rows.length === 0) return { promo: null, discountIdr: 0, empty };
+
+  const productIds = [...new Set(items.map((item) => item.productId))];
+  let best: { promo: Record<string, unknown>; discountIdr: number } | null = null;
+
+  for (const row of rows) {
+    const promo = row as Record<string, unknown>;
+    if (str(promo.discountType) === 'free_item') continue;
+
+    const rules = json<Record<string, unknown>>(promo.rules, {});
+    const allowedBranches = rules.branchIds ?? rules.allowedBranchIds ?? rules.branches;
+    if (Array.isArray(allowedBranches) && allowedBranches.length > 0) {
+      if (!allowedBranches.some((item) => str(item) === branchId)) continue;
+    }
+
+    const minimumOrderIdr = num(promo.minimumOrderIdr);
+    if (minimumOrderIdr > 0 && subtotalIdr < minimumOrderIdr) continue;
+
+    const remaining = remainingQuotaFromRow(promo);
+    if (remaining !== null && remaining <= 0) continue;
+
+    const perUserQuota = nullableNum(promo.perUserQuota);
+    if (perUserQuota !== null) {
+      const used = await promoRepo.countUserVoucherRedemptions(str(promo.id), userId, tx);
+      if (used >= perUserQuota) continue;
+    }
+
+    const promoId = str(promo.id);
+    const eligible = new Set(await promoRepo.eligibleProductIdsForPromo(promoId, productIds, tx));
+    if (eligible.size === 0) continue;
+
+    let discountIdr = 0;
+    for (const item of items) {
+      if (!eligible.has(item.productId)) continue;
+      discountIdr += autoUnitDiscount(promo, item.unitPriceIdr) * item.quantity;
+    }
+    discountIdr = Math.min(subtotalIdr, discountIdr);
+    if (discountIdr <= 0) continue;
+
+    if (!best || discountIdr > best.discountIdr) best = { promo, discountIdr };
+  }
+
+  if (!best) return { promo: null, discountIdr: 0, empty };
+  return { promo: best.promo, discountIdr: best.discountIdr, empty };
+}
+
+/** Kunci promo diskon menu dan pastikan kuota masih tersedia sebelum dipakai. */
+async function lockAutoDiscount(
+  userId: string,
+  auto: AutoDiscount,
+  tx: TransactionClient,
+): Promise<AppliedDiscount> {
+  if (!auto.promo) return auto.empty;
+
+  const promoId = str(auto.promo.id);
+  await tx.advisoryLock(`promo-redeem:${promoId}`);
+  const locked = await promoRepo.lockPromoById(promoId, tx);
+  if (!locked) return auto.empty;
+
+  const promo = locked as Record<string, unknown>;
+  await assertPromoQuota(promoId, userId, tx);
+  if (remainingQuotaFromRow(promo) === 0) return auto.empty;
+
+  return {
+    promoId,
+    voucherId: null,
+    discountIdr: auto.discountIdr,
+    promoName: strOrNull(promo.name),
+  };
+}
+
+/** Sisa kuota dari baris promo yang sudah membawa total_redeemed. */
+function remainingQuotaFromRow(promo: Record<string, unknown>): number | null {
+  const quota = nullableNum(promo.globalQuota);
+  if (quota === null) return null;
+  return Math.max(0, quota - num(promo.totalRedeemed));
 }
 
 /** Promo code ditegakkan dari kode, bukan id, dan dikunci agar kuota tidak bentrok. */
@@ -876,6 +1145,121 @@ export async function listOrders(
   };
 
   return { items: rows.map(shapeOrderSummary), meta: buildPaginationMeta(pagination) };
+}
+
+// --------------------------------------------------------------------------
+// GET /admin/orders - antrean pesanan untuk kasir
+// --------------------------------------------------------------------------
+export async function listAdminOrders(
+  query: ListAdminOrderQuery,
+): Promise<Paginated<ReturnType<typeof shapeAdminOrderSummary>>> {
+  const paging = parsePagination(query);
+  const filters: orderRepo.ListOrderFilters = {
+    orderStatus: query.orderStatus,
+    paymentStatus: query.paymentStatus,
+    branchId: query.branchId,
+    from: query.from,
+    to: query.to,
+    q: query.q?.trim() || undefined,
+    sort: query.sort ?? 'recent',
+  };
+
+  const rows = await orderRepo.listOrdersForBranch(filters, paging);
+  const total = await orderRepo.countOrdersForBranch(filters);
+  const pagination: Pagination = {
+    page: paging.page,
+    limit: paging.limit,
+    offset: paging.offset,
+    total,
+  };
+
+  return {
+    items: rows.map(shapeAdminOrderSummary),
+    meta: buildPaginationMeta(pagination),
+  };
+}
+
+// --------------------------------------------------------------------------
+// PATCH /admin/orders/:id/status - ubah status dari kasir/admin
+// --------------------------------------------------------------------------
+export async function updateOrderStatusByStaff(
+  orderId: string,
+  input: AdminOrderStatusInput,
+  actorUserId: string,
+  audit: AuditContext = {},
+) {
+  const result = await withTransaction(async (tx) => {
+    const order = await orderRepo.lockOrderById(orderId, tx);
+    if (!order) throw notFound('Pesanan', orderId);
+
+    const fromStatus = str(order.orderStatus);
+    const toStatus = input.toStatus;
+
+    if (fromStatus === toStatus) {
+      return { changed: false, fromStatus, toStatus };
+    }
+
+    const closed: string[] = ['completed', 'cancelled', 'rejected'];
+    if (closed.includes(fromStatus)) {
+      throw unprocessable(
+        `Pesanan berstatus '${fromStatus}' sudah final dan tidak bisa diubah`,
+      );
+    }
+
+    // Kasir boleh langsung menyelesaikan/membatalkan pesanan aktif. Untuk
+    // perpindahan lain, ikuti alur status yang sudah disepakati.
+    const isDirectClose = toStatus === 'completed' || toStatus === 'cancelled';
+    const allowed = ORDER_STATUS_FLOW[fromStatus as OrderStatus] ?? [];
+    if (!isDirectClose && !allowed.includes(toStatus)) {
+      throw conflict(
+        `Status tidak bisa diubah dari '${fromStatus}' ke '${toStatus}'`,
+      );
+    }
+
+    if (toStatus === 'cancelled') {
+      await orderRepo.cancelOrderItems(orderId, tx);
+    }
+
+    await orderRepo.updateOrderStatus(
+      orderId,
+      {
+        orderStatus: toStatus,
+        acceptedAt: toStatus === 'accepted' ? true : undefined,
+        completedAt: toStatus === 'completed' ? true : undefined,
+        cancelledAt: toStatus === 'cancelled' ? true : undefined,
+      },
+      tx,
+    );
+
+    await orderRepo.insertStatusHistory(
+      {
+        orderId,
+        fromStatus,
+        toStatus,
+        changedBy: actorUserId,
+        note: input.note ?? 'Diubah oleh kasir/admin',
+      },
+      tx,
+    );
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.order.status.update',
+        entityType: 'order',
+        entityId: orderId,
+        oldData: { orderStatus: fromStatus },
+        newData: { orderStatus: toStatus, note: input.note ?? null },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return { changed: true, fromStatus, toStatus };
+  });
+
+  return result;
 }
 
 // --------------------------------------------------------------------------

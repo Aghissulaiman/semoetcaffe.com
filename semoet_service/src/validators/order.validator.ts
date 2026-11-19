@@ -25,6 +25,11 @@ export const createOrderSchema = z
     addressId: uuidSchema.nullable().optional(),
     tableId: uuidSchema.nullable().optional(),
     pickupAt: isoDateTime.nullable().optional(),
+    /** Nama/telepon pelanggan walk-in yang dicatat kasir. */
+    customerName: z.string().trim().max(120).nullable().optional(),
+    customerPhone: z.string().trim().max(30).nullable().optional(),
+    /** Diskon manual kasir (di luar promo otomatis). */
+    manualDiscountIdr: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
     customerNotes: z.string().trim().max(500).nullable().optional(),
     /** Alamat disimpan sebagai snapshot order agar konsisten walau alamat diedit. */
     useAddressSnapshot: booleanQuery.default(true),

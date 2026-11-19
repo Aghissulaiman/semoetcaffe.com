@@ -7,6 +7,7 @@ import {
   type PaymentPurpose,
 } from '../config/constants.js';
 import { badRequest, conflict, notFound, unprocessable } from '../errors/AppError.js';
+import * as adminRepo from '../repositories/admin.repository.js';
 import * as branchRepo from '../repositories/branch.repository.js';
 import * as eventRepo from '../repositories/event.repository.js';
 import { generateEventBookingNumber } from '../utils/codeGenerator.js';
@@ -19,8 +20,11 @@ import {
   listCateringPackageQuerySchema,
   listEventPackageQuerySchema,
   type CancelEventBookingInput,
+  type CreateEventAgendaInput,
   type CreateEventBookingInput,
+  type ListEventAgendaQuery,
   type ListMyEventBookingQuery,
+  type UpdateEventAgendaInput,
 } from '../validators/event.validator.js';
 
 /** Dipakai juga oleh controller lewat tipe yang diekspor di sini. */
@@ -800,4 +804,257 @@ export async function checkAvailability(query: EventAvailabilityQuery) {
     availableDates: dates.filter((row) => row.isAvailable).map((row) => row.date),
     dates,
   };
+}
+
+// --------------------------------------------------------------------------
+// Admin: list all event bookings with filters
+// --------------------------------------------------------------------------
+export async function listAdminEventBookings(
+  filters: eventRepo.ListAdminEventBookingFilters,
+  pagination: { page: number; limit: number; offset: number },
+) {
+  const rows = await eventRepo.listAdminEventBookings(filters, pagination);
+  const total = await eventRepo.countAdminEventBookings(filters);
+  return { items: rows.map(shapeAdminEventBooking), total };
+}
+
+export async function getAdminEventBooking(bookingId: string) {
+  const booking = await eventRepo.findBookingById(bookingId);
+  if (!booking) throw notFound('Booking Event', bookingId);
+
+  const [catering, addons] = await Promise.all([
+    eventRepo.listBookingCatering(bookingId),
+    eventRepo.listBookingAddons(bookingId),
+  ]);
+
+  return shapeAdminEventBooking({ ...booking, catering, addons });
+}
+
+export async function updateAdminEventBookingStatus(
+  bookingId: string,
+  status: string,
+  note: string | null,
+  quoteIdr: number | null,
+  depositPercent: number | null,
+) {
+  const updated = await eventRepo.updateEventBookingStatus(
+    bookingId,
+    status,
+    note,
+    quoteIdr,
+    depositPercent,
+  );
+  if (!updated) throw notFound('Booking Event', bookingId);
+
+  const [catering, addons] = await Promise.all([
+    eventRepo.listBookingCatering(bookingId),
+    eventRepo.listBookingAddons(bookingId),
+  ]);
+
+  return shapeAdminEventBooking({ ...updated, catering, addons });
+}
+
+function shapeAdminEventBooking(row: Record<string, unknown>) {
+  return {
+    id: str(row.id),
+    bookingNumber: str(row.bookingNumber ?? row.booking_number),
+    branchId: str(row.branchId ?? row.branch_id),
+    branchName: strOrNull(row.branchName ?? row.branch_name),
+    eventType: str(row.eventType ?? row.event_type),
+    eventName: strOrNull(row.eventName ?? row.event_name),
+    startsAt: iso(row.startsAt ?? row.starts_at),
+    endsAt: iso(row.endsAt ?? row.ends_at),
+    guestCount: num(row.guestCount ?? row.guest_count),
+    eventPackageName: strOrNull(row.eventPackageNameSnapshot ?? row.event_package_name_snapshot),
+    eventPackagePriceIdr: roundIdr(num(row.eventPackagePriceSnapshotIdr ?? row.event_package_price_snapshot_idr)),
+    subtotalIdr: roundIdr(num(row.subtotalIdr ?? row.subtotal_idr)),
+    depositIdr: roundIdr(num(row.depositIdr ?? row.deposit_idr)),
+    paidIdr: roundIdr(num(row.paidIdr ?? row.paid_idr)),
+    status: str(row.status),
+    userName: strOrNull(row.userName ?? row.user_name),
+    userEmail: strOrNull(row.userEmail ?? row.user_email),
+    userPhone: strOrNull(row.userPhone ?? row.user_phone),
+    customRequests: strOrNull(row.customRequests ?? row.custom_requests),
+    catering: row.catering ?? [],
+    addons: row.addons ?? [],
+    createdAt: iso(row.createdAt ?? row.created_at),
+  };
+}
+
+// --------------------------------------------------------------------------
+// Agenda event: penanda tanggal (Ramadan, Lebaran, promo musiman, dsb)
+// --------------------------------------------------------------------------
+
+/** Konteks audit untuk aksi CRUD agenda yang dilakukan staf. */
+export interface EventAgendaAuditContext {
+  requestId?: string | null;
+  ipAddress?: string | null;
+}
+
+function shapeEventAgenda(row: Record<string, unknown>) {
+  return {
+    id: str(row.id),
+    title: str(row.title),
+    description: strOrNull(row.description),
+    startsOn: str(row.startsOn),
+    endsOn: str(row.endsOn),
+    isActive: bool(row.isActive),
+    createdBy: strOrNull(row.createdBy),
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+  };
+}
+
+/**
+ * Daftar agenda event. `activeOnly` dipakai endpoint publik supaya agenda
+ * nonaktif tidak ikut tampil.
+ */
+export async function listEventAgenda(
+  query: ListEventAgendaQuery,
+  options: { activeOnly?: boolean } = {},
+): Promise<Paginated<ReturnType<typeof shapeEventAgenda>>> {
+  const paging = parsePagination(query);
+  const filters: eventRepo.ListEventAgendaFilters = {
+    isActive: options.activeOnly ? true : query.isActive === undefined ? undefined : query.isActive === 'true',
+    from: query.from,
+    to: query.to,
+    q: query.q,
+  };
+
+  const rows = await eventRepo.listEventAgenda(filters, paging);
+  const total = await eventRepo.countEventAgenda(filters);
+
+  const pagination: Pagination = {
+    page: paging.page,
+    limit: paging.limit,
+    offset: paging.offset,
+    total,
+  };
+
+  return { items: rows.map(shapeEventAgenda), meta: buildPaginationMeta(pagination) };
+}
+
+export async function getEventAgenda(agendaId: string) {
+  const row = await eventRepo.findEventAgendaById(agendaId);
+  if (!row) throw notFound('Agenda event', agendaId);
+  return shapeEventAgenda(row);
+}
+
+export async function createEventAgenda(
+  input: CreateEventAgendaInput,
+  actorUserId: string | null,
+  audit: EventAgendaAuditContext = {},
+) {
+  const startsOn = input.startsOn;
+  const endsOn = input.endsOn ?? startsOn;
+  if (endsOn < startsOn) {
+    throw unprocessable('Tanggal selesai tidak boleh sebelum tanggal mulai');
+  }
+
+  return withTransaction(async (tx) => {
+    const inserted = await eventRepo.insertEventAgenda(
+      {
+        title: input.title,
+        description: input.description ?? null,
+        startsOn,
+        endsOn,
+        isActive: input.isActive,
+        createdBy: actorUserId,
+      },
+      tx,
+    );
+    if (!inserted) throw conflict('Agenda event gagal disimpan, silakan coba lagi');
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.event_agenda.create',
+        entityType: 'event_agenda',
+        entityId: str(inserted.id),
+        oldData: null,
+        newData: { title: input.title, startsOn, endsOn, isActive: input.isActive },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return shapeEventAgenda(inserted);
+  });
+}
+
+export async function updateEventAgenda(
+  agendaId: string,
+  input: UpdateEventAgendaInput,
+  actorUserId: string | null,
+  audit: EventAgendaAuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const existing = await eventRepo.findEventAgendaById(agendaId, tx);
+    if (!existing) throw notFound('Agenda event', agendaId);
+
+    const startsOn = input.startsOn ?? str(existing.startsOn);
+    const endsOn = input.endsOn ?? str(existing.endsOn);
+    if (endsOn < startsOn) {
+      throw unprocessable('Tanggal selesai tidak boleh sebelum tanggal mulai');
+    }
+
+    const updated = await eventRepo.updateEventAgenda(
+      agendaId,
+      {
+        title: input.title,
+        description: input.description === undefined ? undefined : input.description ?? null,
+        startsOn: input.startsOn,
+        endsOn: input.endsOn,
+        isActive: input.isActive,
+      },
+      tx,
+    );
+    if (!updated) throw notFound('Agenda event', agendaId);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.event_agenda.update',
+        entityType: 'event_agenda',
+        entityId: agendaId,
+        oldData: shapeEventAgenda(existing),
+        newData: shapeEventAgenda(updated),
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return shapeEventAgenda(updated);
+  });
+}
+
+export async function deleteEventAgenda(
+  agendaId: string,
+  actorUserId: string | null,
+  audit: EventAgendaAuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const existing = await eventRepo.findEventAgendaById(agendaId, tx);
+    if (!existing) throw notFound('Agenda event', agendaId);
+
+    await eventRepo.deleteEventAgenda(agendaId, tx);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'admin.event_agenda.delete',
+        entityType: 'event_agenda',
+        entityId: agendaId,
+        oldData: shapeEventAgenda(existing),
+        newData: null,
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return { id: agendaId, deleted: true };
+  });
 }

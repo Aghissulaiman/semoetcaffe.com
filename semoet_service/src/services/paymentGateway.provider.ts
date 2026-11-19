@@ -22,6 +22,8 @@ export interface PaymentChargeRequest {
   paymentPurpose: string;
   orderId?: string | null;
   eventBookingId?: string | null;
+  /** Pembayaran DP reservasi (purpose `reservation_deposit`). */
+  reservationId?: string | null;
   idempotencyKey?: string | null;
 }
 

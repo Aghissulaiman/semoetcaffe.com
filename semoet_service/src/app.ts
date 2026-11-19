@@ -31,6 +31,7 @@ import { globalLimiter } from './middlewares/rateLimit.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 import { notFoundHandler } from './middlewares/notFound.js';
 import { asyncHandler } from './middlewares/asyncHandler.js';
+import { sendSuccess } from './utils/response.js';
 
 // Domain routers
 import { adminRouter } from './routers/admin.routes.js';
@@ -47,6 +48,7 @@ import { favoriteRouter } from './routers/favorite.routes.js';
 import { gamificationRouter } from './routers/gamification.routes.js';
 import { homeRouter } from './routers/home.routes.js';
 import { inventoryRouter } from './routers/inventory.routes.js';
+import { purchaseRouter } from './routers/purchase.routes.js';
 import { loyaltyRouter } from './routers/loyalty.routes.js';
 import { momentRouter } from './routers/moment.routes.js';
 import { notificationRouter } from './routers/notification.routes.js';
@@ -56,6 +58,8 @@ import { profileRouter } from './routers/profile.routes.js';
 import { promoRouter } from './routers/promo.routes.js';
 import { reservationRouter } from './routers/reservation.routes.js';
 import { reviewRouter } from './routers/review.routes.js';
+import { shiftRouter } from './routers/shift.routes.js';
+import { storeRouter } from './routers/store.routes.js';
 
 const app = express();
 
@@ -127,7 +131,10 @@ apiRouter.use(gamificationRouter);
 apiRouter.use(aiRouter);
 
 // --- Admin -----------------------------------------------------------------
+apiRouter.use(shiftRouter);
+apiRouter.use(storeRouter);
 apiRouter.use(inventoryRouter);
+apiRouter.use(purchaseRouter);
 apiRouter.use(adminRouter);
 
 // ---|/me/ (profile pelanggan) ----------------------------------------------
@@ -168,6 +175,19 @@ const healthHandler: RequestHandler = asyncHandler(async (_req, res) => {
 
 app.get('/health', healthHandler);
 apiRouter.get('/health', healthHandler);
+
+// GET /config/pos - konfigurasi publik yang dipakai aplikasi kasir agar
+// perhitungan pajak/biaya di UI selalu sama dengan perhitungan server.
+apiRouter.get('/config/pos', (_req, res) => {
+  return sendSuccess(res, {
+    currency: 'IDR',
+    timezone: env.DEFAULT_TIMEZONE,
+    taxPercent: env.TAX_PERCENT,
+    serviceFeeIdr: env.SERVICE_FEE_IDR,
+    deliveryFeeIdr: env.DELIVERY_FEE_IDR,
+    orderNumberPrefix: env.ORDER_NUMBER_PREFIX,
+  });
+});
 
 app.use(env.API_PREFIX, apiRouter);
 

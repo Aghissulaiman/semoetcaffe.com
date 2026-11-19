@@ -1,0 +1,134 @@
+"use client";
+
+import { useClickOutside } from "@/hooks/useClickOutside";
+import { inputClass } from "@/lib/ui";
+import type { Ingredient } from "@/types/api";
+import { cn } from "@/utils";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
+
+interface IngredientPickerProps {
+  ingredients: Ingredient[];
+  value: string;
+  onChange: (ingredientId: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  /** Tampilkan stok berjalan di setiap opsi. */
+  showStock?: boolean;
+}
+
+/**
+ * Pemilih bahan baku yang bisa langsung diketik. Pengguna mengetik nama/SKU,
+ * daftar opsi otomatis tersaring — tidak perlu menggulir select panjang.
+ */
+export default function IngredientPicker({
+  ingredients,
+  value,
+  onChange,
+  placeholder = "Ketik nama atau SKU bahan...",
+  disabled = false,
+  className,
+  showStock = false,
+}: IngredientPickerProps) {
+  const selected = ingredients.find((item) => item.id === value);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setQuery("");
+  }, []);
+
+  useClickOutside(wrapperRef, close);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return ingredients;
+    return ingredients.filter(
+      (item) =>
+        item.name.toLowerCase().includes(needle) ||
+        item.sku.toLowerCase().includes(needle),
+    );
+  }, [ingredients, query]);
+
+  const displayValue = open ? query : selected ? selected.name : "";
+
+  return (
+    <div ref={wrapperRef} className={cn("relative", className)}>
+      <input
+        type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        autoComplete="off"
+        disabled={disabled}
+        value={displayValue}
+        placeholder={selected ? `${selected.name} (${selected.baseUnit})` : placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") close();
+          if (event.key === "Enter" && open && filtered.length > 0) {
+            event.preventDefault();
+            onChange(filtered[0].id);
+            close();
+          }
+        }}
+        className={cn(inputClass, selected && !open && "font-medium")}
+      />
+      {open && (
+        <div
+          id={listId}
+          role="listbox"
+          className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-coffee-linen bg-white p-1 shadow-lg dark:border-coffee-night-border dark:bg-coffee-night-soft"
+        >
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-theme-xs text-coffee-muted">
+              Bahan tidak ditemukan. Tambahkan dulu di menu Inventori.
+            </p>
+          ) : (
+            filtered.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="option"
+                aria-selected={item.id === value}
+                onClick={() => {
+                  onChange(item.id);
+                  close();
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-start text-theme-sm transition-colors hover:bg-coffee-milk dark:hover:bg-white/5",
+                  item.id === value && "bg-coffee-milk/70 dark:bg-white/5",
+                )}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate font-medium text-coffee-espresso dark:text-coffee-cream">
+                    {item.name}
+                  </span>
+                  <span className="block font-mono text-theme-xs text-coffee-muted">
+                    {item.sku} · {item.baseUnit}
+                  </span>
+                </span>
+                {showStock && (
+                  <span className="shrink-0 text-theme-xs text-coffee-muted">
+                    stok {item.onHand ?? 0}
+                  </span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

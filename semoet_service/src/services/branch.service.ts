@@ -37,6 +37,8 @@ function shapeArea(row: Record<string, unknown>) {
     branchId: row.branchId,
     name: row.name,
     areaType: row.areaType,
+    pricePerHourIdr: row.pricePerHourIdr == null ? null : num(row.pricePerHourIdr),
+    imageUrl: strOrNull(row.imageUrl),
     isActive: Boolean(row.isActive),
     tableCount: num(row.tableCount),
     totalCapacity: num(row.totalCapacity),

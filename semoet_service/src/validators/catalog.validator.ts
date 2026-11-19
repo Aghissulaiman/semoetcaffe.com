@@ -66,6 +66,11 @@ export const listProductQuerySchema = z.object({
   includeImages: booleanQuery.default(true),
 });
 
+/** Admin boleh memuat lebih banyak produk untuk pemilih promo. */
+export const listAdminProductQuerySchema = listProductQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 export const productSlugParamSchema = slugParamSchema;
 
 export const productIdParamSchema = z.object({ id: uuidSchema });

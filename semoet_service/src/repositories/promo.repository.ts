@@ -12,6 +12,8 @@ export interface ListPromoFilters {
   discountType?: string;
   currentlyValid: boolean;
   q?: string;
+  /** true = hanya promo berkode voucher, false = hanya diskon menu otomatis. */
+  hasCode?: boolean;
 }
 
 export async function listPromos(filters: ListPromoFilters, pagination: Paging, executor: Exec = db) {
@@ -29,9 +31,16 @@ export async function listPromos(filters: ListPromoFilters, pagination: Paging, 
         AND ($2::text IS NULL OR pc.discount_type = $2)
         AND ($4::boolean = false OR (pc.starts_at <= now() AND pc.ends_at >= now()))
         AND ($3::text IS NULL OR pc.name ILIKE '%' || $3 || '%' OR pc.code ILIKE '%' || $3 || '%')
+        AND ($5::boolean IS NULL OR (($5::boolean = true AND pc.code IS NOT NULL) OR ($5::boolean = false AND pc.code IS NULL)))
       ORDER BY pc.is_active DESC, pc.ends_at DESC
       ${paginationSql(pagination)}`,
-    [filters.isActive ?? null, filters.discountType ?? null, filters.q ?? null, filters.currentlyValid],
+    [
+      filters.isActive ?? null,
+      filters.discountType ?? null,
+      filters.q ?? null,
+      filters.currentlyValid,
+      filters.hasCode ?? null,
+    ],
   );
 }
 
@@ -43,8 +52,15 @@ export async function countPromos(filters: ListPromoFilters, executor: Exec = db
       WHERE ($1::boolean IS NULL OR pc.is_active = $1)
         AND ($2::text IS NULL OR pc.discount_type = $2)
         AND ($4::boolean = false OR (pc.starts_at <= now() AND pc.ends_at >= now()))
-        AND ($3::text IS NULL OR pc.name ILIKE '%' || $3 || '%' OR pc.code ILIKE '%' || $3 || '%')`,
-    [filters.isActive ?? null, filters.discountType ?? null, filters.q ?? null, filters.currentlyValid],
+        AND ($3::text IS NULL OR pc.name ILIKE '%' || $3 || '%' OR pc.code ILIKE '%' || $3 || '%')
+        AND ($5::boolean IS NULL OR (($5::boolean = true AND pc.code IS NOT NULL) OR ($5::boolean = false AND pc.code IS NULL)))`,
+    [
+      filters.isActive ?? null,
+      filters.discountType ?? null,
+      filters.q ?? null,
+      filters.currentlyValid,
+      filters.hasCode ?? null,
+    ],
   );
   return Number(value ?? 0);
 }
@@ -72,6 +88,200 @@ export async function lockPromoByCode(code: string, executor: Exec) {
     `SELECT ${PROMO_COLUMNS} FROM promo_campaigns WHERE code = $1 FOR UPDATE`,
     [code],
   );
+}
+
+// --------------------------------------------------------------------------
+// Admin CRUD (promo voucher & diskon menu otomatis)
+// --------------------------------------------------------------------------
+export interface PromoWriteInput {
+  code: string | null;
+  name: string;
+  description: string | null;
+  discountType: string;
+  discountValue: number;
+  minimumOrderIdr: number;
+  maximumDiscountIdr: number | null;
+  startsAt: Date;
+  endsAt: Date;
+  globalQuota: number | null;
+  perUserQuota: number | null;
+  rules: Record<string, unknown>;
+  isActive: boolean;
+}
+
+export async function insertPromo(input: PromoWriteInput, executor: Exec) {
+  return one(
+    executor,
+    `INSERT INTO promo_campaigns (
+       code, name, description, discount_type, discount_value,
+       minimum_order_idr, maximum_discount_idr, starts_at, ends_at,
+       global_quota, per_user_quota, rules, is_active
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
+     RETURNING ${PROMO_COLUMNS}, 0::int AS total_redeemed`,
+    [
+      input.code,
+      input.name,
+      input.description,
+      input.discountType,
+      input.discountValue,
+      input.minimumOrderIdr,
+      input.maximumDiscountIdr,
+      input.startsAt,
+      input.endsAt,
+      input.globalQuota,
+      input.perUserQuota,
+      JSON.stringify(input.rules),
+      input.isActive,
+    ],
+  );
+}
+
+export async function updatePromo(promoId: string, input: PromoWriteInput, executor: Exec) {
+  return one(
+    executor,
+    `UPDATE promo_campaigns
+        SET code = $2, name = $3, description = $4, discount_type = $5,
+            discount_value = $6, minimum_order_idr = $7, maximum_discount_idr = $8,
+            starts_at = $9, ends_at = $10, global_quota = $11, per_user_quota = $12,
+            rules = $13::jsonb, is_active = $14
+      WHERE id = $1
+      RETURNING ${PROMO_COLUMNS},
+                (SELECT COUNT(*)::int FROM orders_promo_redemptions opr WHERE opr.promo_id = $1) AS total_redeemed`,
+    [
+      promoId,
+      input.code,
+      input.name,
+      input.description,
+      input.discountType,
+      input.discountValue,
+      input.minimumOrderIdr,
+      input.maximumDiscountIdr,
+      input.startsAt,
+      input.endsAt,
+      input.globalQuota,
+      input.perUserQuota,
+      JSON.stringify(input.rules),
+      input.isActive,
+    ],
+  );
+}
+
+export async function deletePromo(promoId: string, executor: Exec) {
+  return one(executor, `DELETE FROM promo_campaigns WHERE id = $1 RETURNING id`, [promoId]);
+}
+
+export async function countPromoVouchers(promoId: string, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM user_vouchers WHERE promo_id = $1`,
+    [promoId],
+  );
+  return Number(value ?? 0);
+}
+
+export async function replaceEligibility(
+  promoId: string,
+  input: { productIds: string[]; categoryIds: string[] },
+  executor: Exec,
+) {
+  await executor.query(`DELETE FROM promo_product_eligibility WHERE promo_id = $1`, [promoId]);
+
+  if (input.productIds.length > 0) {
+    await executor.query(
+      `INSERT INTO promo_product_eligibility (promo_id, product_id)
+       SELECT $1, unnest($2::uuid[])`,
+      [promoId, input.productIds],
+    );
+  }
+  if (input.categoryIds.length > 0) {
+    await executor.query(
+      `INSERT INTO promo_product_eligibility (promo_id, category_id)
+       SELECT $1, unnest($2::uuid[])`,
+      [promoId, input.categoryIds],
+    );
+  }
+}
+
+/** Promo diskon menu yang aktif dan sedang berjalan (tanpa kode voucher). */
+export async function listActiveAutoPromos(executor: Exec = db) {
+  return many(
+    executor,
+    `SELECT ${PROMO_COLUMNS},
+            used.total_redeemed
+       FROM promo_campaigns pc
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS total_redeemed
+           FROM orders_promo_redemptions opr
+          WHERE opr.promo_id = pc.id
+       ) used ON true
+      WHERE pc.code IS NULL
+        AND pc.is_active = true
+        AND pc.starts_at <= now()
+        AND pc.ends_at >= now()
+      ORDER BY pc.created_at DESC`,
+  );
+}
+
+/** Cek promo diskon menu lain yang periodenya tumpang tindih. */
+export async function findOverlappingAutoPromo(
+  excludeId: string | null,
+  startsAt: Date,
+  endsAt: Date,
+  executor: Exec = db,
+) {
+  return one(
+    executor,
+    `SELECT id, name FROM promo_campaigns
+      WHERE code IS NULL
+        AND is_active = true
+        AND ($1::uuid IS NULL OR id <> $1)
+        AND starts_at < $3
+        AND ends_at > $2
+      LIMIT 1`,
+    [excludeId, startsAt, endsAt],
+  );
+}
+
+/** Semua baris eligibility untuk beberapa promo sekaligus (hindari N+1). */
+export async function listEligibilityForPromos(promoIds: string[], executor: Exec = db) {
+  if (promoIds.length === 0) return [];
+  return many(
+    executor,
+    `SELECT promo_id, product_id, category_id
+       FROM promo_product_eligibility
+      WHERE promo_id = ANY($1::uuid[])`,
+    [promoIds],
+  );
+}
+
+/**
+ * Produk dari keranjang yang benar-benar tercakup eligibility promo.
+ * Promo tanpa eligibility dianggap berlaku untuk semua produk.
+ */
+export async function eligibleProductIdsForPromo(
+  promoId: string,
+  productIds: string[],
+  executor: Exec = db,
+) {
+  if (productIds.length === 0) return [] as string[];
+
+  const rows = await many(
+    executor,
+    `SELECT DISTINCT p.id
+       FROM products p
+      WHERE p.id = ANY($2::uuid[])
+        AND (
+          NOT EXISTS (SELECT 1 FROM promo_product_eligibility ppe WHERE ppe.promo_id = $1)
+          OR EXISTS (
+            SELECT 1 FROM promo_product_eligibility ppe
+             WHERE ppe.promo_id = $1
+               AND (ppe.product_id = p.id OR ppe.category_id = p.category_id)
+          )
+        )`,
+    [promoId, productIds],
+  );
+
+  return rows.map((row) => String(row.id));
 }
 
 // --------------------------------------------------------------------------

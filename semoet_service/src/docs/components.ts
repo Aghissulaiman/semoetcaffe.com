@@ -702,6 +702,8 @@ const schemas: Record<string, SchemaLike> = {
       guestCount: { type: 'integer', minimum: 1 },
       seatingPreference: { type: 'string', nullable: true, enum: ['indoor', 'outdoor', 'private_room', 'any'] },
       status: { type: 'string', enum: ['requested', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show'] },
+      contactName: { type: 'string', nullable: true, maxLength: 120 },
+      contactPhone: { type: 'string', nullable: true, maxLength: 30 },
       specialRequests: nullableString,
       tables: { type: 'array', items: ref('CafeTable') },
       createdAt: { type: 'string', format: 'date-time' },
@@ -815,7 +817,7 @@ const schemas: Record<string, SchemaLike> = {
   },
   StockLocation: {
     type: 'object',
-    properties: { id: uuid, branchId: uuid, branchName: { type: 'string' }, name: { type: 'string' } },
+    properties: { id: uuid, name: { type: 'string' }, movementCount: { type: 'integer' } },
   },
   InventoryMovement: {
     type: 'object',
@@ -1351,6 +1353,8 @@ const schemas: Record<string, SchemaLike> = {
       reservedFor: { type: 'string', format: 'date-time' },
       durationMinutes: { type: 'integer', minimum: 15, maximum: 720, default: 120 },
       guestCount: { type: 'integer', minimum: 1, maximum: 100 },
+      contactName: { type: 'string', nullable: true, maxLength: 120, description: 'Nama kontak yang diisi pelanggan pada form reservasi.' },
+      contactPhone: { type: 'string', nullable: true, maxLength: 30, description: 'Nomor telepon kontak yang diisi pelanggan pada form reservasi.' },
       seatingPreference: { type: 'string', nullable: true, enum: ['indoor', 'outdoor', 'private_room', 'any'] },
       tableIds: { type: 'array', items: uuid, description: 'Meja yang ingin diamankan (opsional).' },
       specialRequests: { type: 'string', nullable: true, maxLength: 500 },

@@ -1,6 +1,7 @@
 import { withTransaction } from '../config/database.js';
 import { type ChatSenderType, type ChatStatus } from '../config/constants.js';
 import { forbidden, notFound, unprocessable } from '../errors/AppError.js';
+import * as adminRepo from '../repositories/admin.repository.js';
 import * as chatRepo from '../repositories/chat.repository.js';
 import { sendPush } from '../utils/notifier.js';
 import { buildPaginationMeta, parsePagination, type Pagination } from '../utils/pagination.js';
@@ -16,6 +17,12 @@ import type {
 export interface Paginated<T> {
   items: T[];
   meta: ReturnType<typeof buildPaginationMeta>;
+}
+
+/** Konteks audit request untuk aktivitas staff di percakapan. */
+export interface ChatAuditContext {
+  requestId?: string | null;
+  ipAddress?: string | null;
 }
 
 /** Pengirim pesan yang dipakai endpoint ini. */
@@ -49,6 +56,7 @@ function shapeConversation(row: Record<string, unknown>) {
     assignedStaffId: strOrNull(row.assignedStaffId),
     assignedStaffName: strOrNull(row.staffName),
     topic: str(row.topic),
+    category: str(row.category ?? 'general'),
     status: str(row.status),
     lastMessagePreview: preview(strOrNull(row.lastMessage)),
     lastMessageAt: iso(row.lastMessageAt),
@@ -67,6 +75,8 @@ function shapeMessage(row: Record<string, unknown>) {
     senderName: strOrNull(row.senderName),
     body: str(row.body),
     attachmentStorageKey: strOrNull(row.attachmentStorageKey),
+    deliveredAt: iso(row.deliveredAt),
+    readAt: iso(row.readAt),
     createdAt: iso(row.createdAt),
   };
 }
@@ -82,6 +92,33 @@ function preview(body: string | null): string | null {
 function notifyBody(body: string): string {
   const flat = body.replace(/\s+/g, ' ').trim();
   return flat.length <= NOTIFY_LENGTH ? flat : `${flat.slice(0, NOTIFY_LENGTH)}...`;
+}
+
+/**
+ * Deteksi awal kategori percakapan dari topik/pesan pembuka. Admin tetap bisa
+ * mengubah kategori secara manual lewat panel, ini hanya pintu masuk otomatis
+ * supaya keluhan langsung masuk filter "Keluhan".
+ */
+function detectCategory(topic: string, initialMessage?: string): 'general' | 'complaint' {
+  const haystack = `${topic} ${initialMessage ?? ''}`.toLowerCase();
+  const complaintKeywords = [
+    'keluhan',
+    'komplain',
+    'complain',
+    'masalah',
+    'rusak',
+    'salah',
+    'kecewa',
+    'refund',
+    'pengembalian',
+    'terlambat',
+    'telat',
+    'tidak sesuai',
+    'belum diterima',
+    'hilang',
+    'basi',
+  ];
+  return complaintKeywords.some((keyword) => haystack.includes(keyword)) ? 'complaint' : 'general';
 }
 
 /**
@@ -164,7 +201,12 @@ export async function createConversation(userId: string, input: CreateConversati
     // Auto-assign ke staff dengan beban percakapan aktif paling sedikit.
     const staff = await chatRepo.findLeastLoadedStaff(tx);
     const inserted = await chatRepo.insertConversation(
-      { userId, topic: input.topic, assignedStaffId: staff ? strOrNull(staff.id) : null },
+      {
+        userId,
+        topic: input.topic,
+        category: input.category ?? detectCategory(input.topic, input.initialMessage),
+        assignedStaffId: staff ? strOrNull(staff.id) : null,
+      },
       tx,
     );
     if (!inserted) throw unprocessable('Percakapan gagal dibuat, silakan coba lagi');
@@ -229,6 +271,8 @@ export async function updateConversation(
   conversationId: string,
   input: UpdateConversationInput,
   isStaff: boolean,
+  actorUserId: string,
+  audit: ChatAuditContext = {},
 ) {
   if (!isStaff) throw forbidden('Hanya staff yang dapat mengubah status percakapan');
 
@@ -238,11 +282,37 @@ export async function updateConversation(
 
     // updateConversation menyusun SET dari nama kolom, jadi payload memakai
     // nama kolom database (snake_case).
-    const data: Record<string, unknown> = { status: input.status };
+    const data: Record<string, unknown> = {};
+    if (input.status !== undefined) data.status = input.status;
+    if (input.category !== undefined) data.category = input.category;
     if (input.assignedStaffId !== undefined) data.assigned_staff_id = input.assignedStaffId;
 
     const updated = await chatRepo.updateConversation(conversationId, data, tx);
-    return shapeConversation((updated ?? current) as unknown as Record<string, unknown>);
+    const shaped = shapeConversation((updated ?? current) as unknown as Record<string, unknown>);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'chat.conversation.update',
+        entityType: 'conversation',
+        entityId: conversationId,
+        oldData: {
+          status: str(current.status),
+          category: str(current.category ?? 'general'),
+          assignedStaffId: strOrNull(current.assignedStaffId),
+        },
+        newData: {
+          status: shaped.status,
+          category: shaped.category,
+          assignedStaffId: shaped.assignedStaffId,
+        },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
+    return shaped;
   });
 }
 
@@ -259,6 +329,9 @@ export async function listMessages(
   if (!conversation) throw notFound('Percakapan', conversationId);
 
   assertConversationAccess(conversation, userId, isStaff);
+
+  // Buka thread = pesan dari pihak lawan sudah terkirim dan dibaca.
+  await chatRepo.markMessagesRead(conversationId, isStaff ? 'customer' : 'staff');
 
   const paging = parsePagination(query);
   const rows = await chatRepo.listMessages(conversationId, paging, query.after);
@@ -307,6 +380,30 @@ export async function sendMessage(
     // cukup satu repository call di dalam transaksi yang sama.
     const synced = await chatRepo.syncConversationStatus(conversationId, senderType, tx);
 
+    // Pesan pelanggan yang mengandung indikasi keluhan otomatis masuk filter
+    // "Keluhan". Admin tetap bisa mengubah kategori manual lewat panel.
+    const nextCategory =
+      !isStaff && detectCategory(str(conversation.topic), input.body) === 'complaint'
+        ? 'complaint'
+        : str(conversation.category ?? 'general');
+    const previousCategory = str(conversation.category ?? 'general');
+    if (nextCategory !== previousCategory) {
+      await chatRepo.updateConversation(conversationId, { category: nextCategory }, tx);
+      await adminRepo.insertAuditLog(
+        {
+          actorUserId: userId,
+          action: 'chat.conversation.category',
+          entityType: 'conversation',
+          entityId: conversationId,
+          oldData: { category: previousCategory },
+          newData: { category: nextCategory },
+          requestId: null,
+          ipAddress: null,
+        },
+        tx,
+      );
+    }
+
     return {
       message,
       recipientId: isStaff
@@ -338,6 +435,8 @@ export async function assignStaff(
   conversationId: string,
   input: AssignConversationRequest,
   isStaff: boolean,
+  actorUserId: string,
+  audit: ChatAuditContext = {},
 ) {
   if (!isStaff) throw forbidden('Hanya staff yang dapat menugaskan percakapan');
 
@@ -363,6 +462,21 @@ export async function assignStaff(
     );
 
     const shaped = shapeConversation((updated ?? current) as unknown as Record<string, unknown>);
+
+    await adminRepo.insertAuditLog(
+      {
+        actorUserId,
+        action: 'chat.conversation.assign',
+        entityType: 'conversation',
+        entityId: conversationId,
+        oldData: { assignedStaffId: previousStaffId },
+        newData: { assignedStaffId: staffId },
+        requestId: audit.requestId ?? null,
+        ipAddress: audit.ipAddress ?? null,
+      },
+      tx,
+    );
+
     return { ...shaped, previousStaffId };
   });
 }

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import * as chatService from '../services/chat.service.js';
 import { sendCreated, sendPaginated, sendSuccess } from '../utils/response.js';
-import { getBody, getParams, getQuery, getUserId } from '../utils/request.js';
+import { getBody, getIp, getParams, getQuery, getUserId } from '../utils/request.js';
 import {
   conversationIdParamSchema,
   type CreateConversationInput,
@@ -22,6 +22,11 @@ function getConversationId(req: Request): string {
   return parsed.success ? parsed.data.id : params.id;
 }
 
+/** Konteks audit dari request untuk halaman Aktivitas Sistem. */
+function auditContext(req: Request) {
+  return { requestId: req.requestId ?? null, ipAddress: getIp(req) };
+}
+
 // GET /chat/conversations (antrean support untuk staff)
 export async function listConversations(req: Request, res: Response): Promise<Response> {
   const result = await chatService.listConversations(
@@ -40,6 +45,21 @@ export async function listConversations(req: Request, res: Response): Promise<Re
     },
     { queue: result.queue },
   );
+}
+
+// GET /chat/conversations/mine (riwayat percakapan milik customer)
+export async function listMine(req: Request, res: Response): Promise<Response> {
+  const result = await chatService.listConversations(
+    getQuery<ListConversationQuery>(req),
+    getUserId(req),
+    false,
+  );
+
+  return sendPaginated(res, result.items, {
+    page: result.meta.page,
+    limit: result.meta.limit,
+    total: result.meta.total,
+  });
 }
 
 // POST /chat/conversations (mulai atau lanjutkan percakapan)
@@ -67,6 +87,8 @@ export async function update(req: Request, res: Response): Promise<Response> {
     getConversationId(req),
     getBody<UpdateConversationInput>(req),
     isStaffRequest(req),
+    getUserId(req),
+    auditContext(req),
   );
   return sendSuccess(res, data);
 }
@@ -104,6 +126,8 @@ export async function assignStaff(req: Request, res: Response): Promise<Response
     getConversationId(req),
     getBody<chatService.AssignConversationRequest>(req),
     isStaffRequest(req),
+    getUserId(req),
+    auditContext(req),
   );
   return sendSuccess(res, data);
 }

@@ -90,7 +90,7 @@ export async function insertMoment(
 ) {
   return one<{ id: string }>(
     executor,
-    `INSERT INTO semoet_moments (user_id, title, caption, event_type, moderation_status)
+    `INSERT INTO semoet_moments AS sm (user_id, title, caption, event_type, moderation_status)
      VALUES ($1,$2,$3,$4,$5)
      RETURNING ${MOMENT_COLUMNS}`,
     [input.userId, input.title ?? null, input.caption ?? null, input.eventType ?? null, input.moderationStatus],
@@ -119,8 +119,8 @@ export async function updateMoment(
   const assignments = columns.map((column, index) => `${column} = $${index + 3}`).join(', ');
   return one(
     executor,
-    `UPDATE semoet_moments SET ${assignments}
-      WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)
+    `UPDATE semoet_moments sm SET ${assignments}
+      WHERE sm.id = $1 AND ($2::uuid IS NULL OR sm.user_id = $2)
       RETURNING ${MOMENT_COLUMNS}`,
     [momentId, userId, ...Object.values(data)],
   );
@@ -129,7 +129,7 @@ export async function updateMoment(
 export async function moderateMoment(momentId: string, moderationStatus: string, executor: Exec = db) {
   return one(
     executor,
-    `UPDATE semoet_moments SET moderation_status = $2 WHERE id = $1 RETURNING ${MOMENT_COLUMNS}`,
+    `UPDATE semoet_moments sm SET moderation_status = $2 WHERE sm.id = $1 RETURNING ${MOMENT_COLUMNS}`,
     [momentId, moderationStatus],
   );
 }
@@ -137,7 +137,7 @@ export async function moderateMoment(momentId: string, moderationStatus: string,
 export async function deleteMoment(momentId: string, userId: string | null, executor: Exec = db) {
   const row = await one<{ id: string }>(
     executor,
-    `DELETE FROM semoet_moments WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) RETURNING id`,
+    `DELETE FROM semoet_moments sm WHERE sm.id = $1 AND ($2::uuid IS NULL OR sm.user_id = $2) RETURNING id`,
     [momentId, userId],
   );
   return Boolean(row);
@@ -155,4 +155,59 @@ export async function countMomentsByStatus(executor: Exec = db) {
        FROM semoet_moments
       GROUP BY moderation_status`,
   );
+}
+
+// --------------------------------------------------------------------------
+// Admin: list all moments with filters
+// --------------------------------------------------------------------------
+export interface ListAdminMomentFilters {
+  moderationStatus?: string;
+  q?: string;
+}
+
+export async function listAdminMoments(
+  filters: ListAdminMomentFilters,
+  pagination: { page: number; limit: number; offset: number },
+  executor: Exec = db,
+) {
+  return many(
+    executor,
+    `SELECT ${MOMENT_COLUMNS},
+            u.display_name AS author_name, u.email AS author_email,
+            media.list AS media
+       FROM semoet_moments sm
+       LEFT JOIN users u ON u.id = sm.user_id
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(jsonb_build_object(
+                  'id', smm.id, 'storageKey', smm.storage_key, 'publicUrl', smm.public_url,
+                  'mediaType', smm.media_type, 'sortOrder', smm.sort_order
+                ) ORDER BY smm.sort_order ASC) AS list
+           FROM semoet_moment_media smm
+          WHERE smm.moment_id = sm.id
+       ) media ON true
+      WHERE ($1::text IS NULL OR sm.moderation_status = $1)
+        AND ($2::text IS NULL OR u.display_name ILIKE '%' || $2 || '%'
+                          OR u.email ILIKE '%' || $2 || '%'
+                          OR sm.title ILIKE '%' || $2 || '%'
+                          OR sm.caption ILIKE '%' || $2 || '%')
+      ORDER BY sm.created_at DESC
+      ${paginationSql(pagination)}`,
+    [filters.moderationStatus ?? null, filters.q ?? null],
+  );
+}
+
+export async function countAdminMoments(filters: ListAdminMomentFilters, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int
+       FROM semoet_moments sm
+       LEFT JOIN users u ON u.id = sm.user_id
+      WHERE ($1::text IS NULL OR sm.moderation_status = $1)
+        AND ($2::text IS NULL OR u.display_name ILIKE '%' || $2 || '%'
+                          OR u.email ILIKE '%' || $2 || '%'
+                          OR sm.title ILIKE '%' || $2 || '%'
+                          OR sm.caption ILIKE '%' || $2 || '%')`,
+    [filters.moderationStatus ?? null, filters.q ?? null],
+  );
+  return Number(value ?? 0);
 }

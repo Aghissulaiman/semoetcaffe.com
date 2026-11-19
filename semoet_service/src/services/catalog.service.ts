@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as catalogRepo from '../repositories/catalog.repository.js';
+import * as promoRepo from '../repositories/promo.repository.js';
 import * as reviewRepo from '../repositories/review.repository.js';
 import * as userRepo from '../repositories/user.repository.js';
 import { badRequest, notFound } from '../errors/AppError.js';
@@ -177,6 +178,117 @@ function shapeVariant(row: Record<string, unknown>, modifierGroups: GrupModifier
   };
 }
 
+// --------------------------------------------------------------------------
+// Promo diskon menu otomatis (promo_campaigns.code IS NULL)
+// --------------------------------------------------------------------------
+interface ActiveAutoPromo {
+  id: string;
+  name: string;
+  discountType: string;
+  discountValue: number;
+  maximumDiscountIdr: number | null;
+  productIds: Set<string>;
+  categoryIds: Set<string>;
+}
+
+export interface ProductPromo {
+  id: string;
+  name: string;
+  discountType: string;
+  discountValue: number;
+  originalPriceIdr: number;
+  promoPriceIdr: number;
+  discountIdr: number;
+}
+
+async function loadActiveAutoPromos(): Promise<ActiveAutoPromo[]> {
+  const rows = await promoRepo.listActiveAutoPromos();
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((row) => String(row.id));
+  const eligibility = await promoRepo.listEligibilityForPromos(ids);
+
+  const productsByPromo = new Map<string, Set<string>>();
+  const categoriesByPromo = new Map<string, Set<string>>();
+  for (const row of eligibility) {
+    const promoId = String(row.promoId);
+    if (row.productId) {
+      const set = productsByPromo.get(promoId) ?? new Set<string>();
+      set.add(String(row.productId));
+      productsByPromo.set(promoId, set);
+    }
+    if (row.categoryId) {
+      const set = categoriesByPromo.get(promoId) ?? new Set<string>();
+      set.add(String(row.categoryId));
+      categoriesByPromo.set(promoId, set);
+    }
+  }
+
+  return rows.map((row) => {
+    const id = String(row.id);
+    return {
+      id,
+      name: String(row.name ?? ''),
+      discountType: String(row.discountType ?? ''),
+      discountValue: num(row.discountValue),
+      maximumDiscountIdr:
+        row.maximumDiscountIdr === null || row.maximumDiscountIdr === undefined
+          ? null
+          : num(row.maximumDiscountIdr),
+      productIds: productsByPromo.get(id) ?? new Set<string>(),
+      categoryIds: categoriesByPromo.get(id) ?? new Set<string>(),
+    };
+  });
+}
+
+function promoMatchesProduct(
+  promo: ActiveAutoPromo,
+  productId: string,
+  categoryId: string | null,
+): boolean {
+  if (promo.productIds.size === 0 && promo.categoryIds.size === 0) return true;
+  if (promo.productIds.has(productId)) return true;
+  return Boolean(categoryId && promo.categoryIds.has(categoryId));
+}
+
+function promoForUnit(
+  promos: ActiveAutoPromo[],
+  input: { productId: string; categoryId: string | null; unitPriceIdr: number },
+): ProductPromo | null {
+  const originalPriceIdr = Math.max(0, Math.round(input.unitPriceIdr));
+  if (originalPriceIdr <= 0) return null;
+
+  let best: ProductPromo | null = null;
+  for (const promo of promos) {
+    if (!promoMatchesProduct(promo, input.productId, input.categoryId)) continue;
+    if (promo.discountType !== 'percentage' && promo.discountType !== 'fixed') continue;
+
+    let discountIdr =
+      promo.discountType === 'percentage'
+        ? Math.round((originalPriceIdr * Math.min(100, Math.max(0, promo.discountValue))) / 100)
+        : Math.max(0, Math.round(promo.discountValue));
+    if (promo.maximumDiscountIdr !== null) {
+      discountIdr = Math.min(discountIdr, promo.maximumDiscountIdr);
+    }
+    discountIdr = Math.min(originalPriceIdr, discountIdr);
+    if (discountIdr <= 0) continue;
+
+    if (!best || discountIdr > best.discountIdr) {
+      best = {
+        id: promo.id,
+        name: promo.name,
+        discountType: promo.discountType,
+        discountValue: promo.discountValue,
+        originalPriceIdr,
+        promoPriceIdr: originalPriceIdr - discountIdr,
+        discountIdr,
+      };
+    }
+  }
+
+  return best;
+}
+
 /** Data produk yang dipakai bersama oleh shape summary dan shape detail. */
 function shapeProductBase(row: Record<string, unknown>) {
   return {
@@ -297,9 +409,27 @@ function shapeProductDetail(input: {
   rating: Record<string, unknown> | null;
   isFavorite: boolean;
   at: Date;
+  autoPromos: ActiveAutoPromo[];
 }) {
-  const { product, variants, images, modifierGroups, categories, rating, isFavorite, at } = input;
+  const {
+    product,
+    variants,
+    images,
+    modifierGroups,
+    categories,
+    rating,
+    isFavorite,
+    at,
+    autoPromos,
+  } = input;
   const base = shapeProductBase(product);
+  const productId = String(product.id);
+  const categoryId =
+    product.categoryId === null || product.categoryId === undefined
+      ? null
+      : String(product.categoryId);
+  const basePriceIdr =
+    variants.length > 0 ? Math.min(...variants.map((row) => num(row.priceIdr))) : null;
 
   return {
     ...base,
@@ -309,8 +439,23 @@ function shapeProductDetail(input: {
     rating: shapeRatingSummary(rating),
     isFavorite,
     isAvailable: isProductAvailableAt(product, at),
-    basePriceIdr: variants.length > 0 ? Math.min(...variants.map((row) => num(row.priceIdr))) : null,
-    variants: variants.map((row) => shapeVariant(row, modifierGroups)),
+    basePriceIdr,
+    promo: basePriceIdr === null
+      ? null
+      : promoForUnit(autoPromos, { productId, categoryId, unitPriceIdr: basePriceIdr }),
+    variants: variants.map((row) => {
+      const variant = shapeVariant(row, modifierGroups);
+      const promo = promoForUnit(autoPromos, {
+        productId,
+        categoryId,
+        unitPriceIdr: variant.priceIdr,
+      });
+      return {
+        ...variant,
+        promoPriceIdr: promo ? promo.promoPriceIdr : null,
+        promo,
+      };
+    }),
     images: images.map(shapeImage),
     modifierGroups,
     categories,
@@ -360,14 +505,16 @@ async function buildProductDetail(
   const productId = String(product.id);
   const at = new Date();
 
-  const [variants, images, modifierGroups, categoryRows, rating, favorite] = await Promise.all([
-    catalogRepo.listVariants(productId),
-    catalogRepo.listProductImages(productId),
-    loadModifierGroups(productId),
-    catalogRepo.listCategories({ isActive: true }),
-    reviewRepo.getProductRatingSummary(productId),
-    userId ? userRepo.isFavorite(userId, productId) : Promise.resolve(false),
-  ]);
+  const [variants, images, modifierGroups, categoryRows, rating, favorite, autoPromos] =
+    await Promise.all([
+      catalogRepo.listVariants(productId),
+      catalogRepo.listProductImages(productId),
+      loadModifierGroups(productId),
+      catalogRepo.listCategories({ isActive: true }),
+      reviewRepo.getProductRatingSummary(productId),
+      userId ? userRepo.isFavorite(userId, productId) : Promise.resolve(false),
+      loadActiveAutoPromos(),
+    ]);
 
   return shapeProductDetail({
     product,
@@ -378,6 +525,7 @@ async function buildProductDetail(
     rating: rating as Record<string, unknown> | null,
     isFavorite: Boolean(favorite),
     at,
+    autoPromos,
   });
 }
 
@@ -385,13 +533,18 @@ async function buildProductDetail(
 // GET /products
 // --------------------------------------------------------------------------
 
-function buildProductFilters(query: ListProductQuery): catalogRepo.ProductFilters {
+function buildProductFilters(
+  query: ListProductQuery,
+  options: { includeInactive?: boolean } = {},
+): catalogRepo.ProductFilters {
   return {
     categoryId: query.categoryId,
     parentCategoryId: query.parentCategoryId,
     categorySlug: query.categorySlug,
     productKind: query.productKind,
     isFeatured: query.isFeatured,
+    isActive: query.isActive,
+    includeInactive: options.includeInactive === true,
     branchId: query.branchId,
     availableAt: query.availableAt,
     serviceType: query.serviceType,
@@ -404,17 +557,36 @@ function buildProductFilters(query: ListProductQuery): catalogRepo.ProductFilter
   };
 }
 
-export async function listProducts(query: ListProductQuery, userId?: string | null): Promise<Paginated<unknown>> {
+export async function listProducts(
+  query: ListProductQuery,
+  userId?: string | null,
+  options: { includeInactive?: boolean } = {},
+): Promise<Paginated<unknown>> {
   const paging = parsePagination(query);
-  const filters = buildProductFilters(query);
+  const filters = buildProductFilters(query, options);
   const parsedAt = query.availableAt ? new Date(query.availableAt) : new Date();
   const at = Number.isNaN(parsedAt.getTime()) ? new Date() : parsedAt;
 
   const rows = await catalogRepo.listProducts(filters, paging);
+  const autoPromos = await loadActiveAutoPromos();
 
   const favoriteIds = userId
     ? await userRepo.favoriteProductIds(userId, rows.map((row) => String(row.id)))
     : new Set<string>();
+
+  // Varian default dibutuhkan POS/kasir untuk membuat order tanpa harus
+  // membuka detail setiap produk satu per satu.
+  const variantRows = await catalogRepo.listVariantsForProducts(
+    rows.map((row) => String(row.id)),
+  );
+  const variantsByProduct = new Map<string, Record<string, unknown>[]>();
+  for (const variant of variantRows as Record<string, unknown>[]) {
+    const productId = String(variant.productId ?? '');
+    if (!productId) continue;
+    const list = variantsByProduct.get(productId) ?? [];
+    list.push(variant);
+    variantsByProduct.set(productId, list);
+  }
 
   // Galeri sudah ikut di-select oleh query list, jadi includeImages=false tidak
   // memanggil listProductImagesBulk sama sekali (hemat satu query).
@@ -452,16 +624,33 @@ export async function listProducts(query: ListProductQuery, userId?: string | nu
         }))
       : [];
 
+    const productId = String(row.id);
+    const categoryId = row.categoryId === null || row.categoryId === undefined ? null : String(row.categoryId);
+    const basePriceIdr =
+      row.minPriceIdr === null || row.minPriceIdr === undefined ? null : num(row.minPriceIdr);
+
+    const productVariants = variantsByProduct.get(productId) ?? [];
+    const defaultVariantRow =
+      productVariants.find((variant) => bool(variant.isDefault) && bool(variant.isActive)) ??
+      productVariants.find((variant) => bool(variant.isActive)) ??
+      null;
+    const defaultVariant = defaultVariantRow
+      ? shapeVariant(defaultVariantRow, modifierGroups)
+      : null;
+
     return {
-      id: String(row.id),
+      id: productId,
       slug: String(row.slug ?? ''),
       name: String(row.name ?? ''),
       descriptionShort: truncate(row.description),
       productKind: strOrNull(row.productKind),
       isFeatured: bool(row.isFeatured),
       isActive: bool(row.isActive),
-      basePriceIdr: row.minPriceIdr === null || row.minPriceIdr === undefined ? null : num(row.minPriceIdr),
+      basePriceIdr,
       maxPriceIdr: row.maxPriceIdr === null || row.maxPriceIdr === undefined ? null : num(row.maxPriceIdr),
+      promo: basePriceIdr === null
+        ? null
+        : promoForUnit(autoPromos, { productId, categoryId, unitPriceIdr: basePriceIdr }),
       imageUrl: primaryImage ? primaryImage.url : strOrNull(row.imageUrl),
       category: shapeCategoryRef(row),
       rating: shapeListRating(row),
@@ -469,6 +658,7 @@ export async function listProducts(query: ListProductQuery, userId?: string | nu
       isAvailable: isProductAvailableAt(row, at),
       images,
       modifierGroups,
+      defaultVariant,
     };
   });
 
@@ -476,6 +666,11 @@ export async function listProducts(query: ListProductQuery, userId?: string | nu
   const pagination: Pagination = { page: paging.page, limit: paging.limit, offset: paging.offset, total };
 
   return { items, meta: buildPaginationMeta(pagination) };
+}
+
+/** Daftar produk untuk admin: produk nonaktif tetap terlihat. */
+export async function listAdminProducts(query: ListProductQuery): Promise<Paginated<unknown>> {
+  return listProducts(query, null, { includeInactive: true });
 }
 
 // --------------------------------------------------------------------------

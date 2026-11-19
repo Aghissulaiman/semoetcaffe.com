@@ -7,9 +7,11 @@ import { validate } from '../middlewares/validate.js';
 import {
   cancelReservationSchema,
   checkAvailabilityQuerySchema,
+  createMyDepositChargeSchema,
   createReservationSchema,
   listMyReservationQuerySchema,
   reservationIdParamSchema,
+  uploadDepositProofSchema,
 } from '../validators/reservation.validator.js';
 
 export const reservationRouter = Router();
@@ -57,4 +59,22 @@ reservationRouter.post(
   writeLimiter,
   validate({ params: reservationIdParamSchema, body: cancelReservationSchema }),
   asyncHandler(reservationController.cancel),
+);
+
+// POST /reservations/:id/deposit-charge - pelanggan bayar DP sendiri via Midtrans
+reservationRouter.post(
+  '/reservations/:id/deposit-charge',
+  authenticate,
+  writeLimiter,
+  validate({ params: reservationIdParamSchema, body: createMyDepositChargeSchema }),
+  asyncHandler(reservationController.createDepositCharge),
+);
+
+// POST /reservations/:id/deposit-proof - pelanggan unggah bukti transfer DP
+reservationRouter.post(
+  '/reservations/:id/deposit-proof',
+  authenticate,
+  writeLimiter,
+  validate({ params: reservationIdParamSchema, body: uploadDepositProofSchema }),
+  asyncHandler(reservationController.uploadDepositProof),
 );

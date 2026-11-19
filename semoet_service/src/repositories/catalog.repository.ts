@@ -50,6 +50,102 @@ export async function findCategoryById(categoryId: string, executor: Exec = db) 
   );
 }
 
+export async function categorySlugExists(
+  slug: string,
+  exceptCategoryId: string | null = null,
+  executor: Exec = db,
+) {
+  const value = await scalar<boolean>(
+    executor,
+    `SELECT EXISTS (
+       SELECT 1 FROM product_categories
+        WHERE slug = $1 AND ($2::uuid IS NULL OR id <> $2)
+     )`,
+    [slug, exceptCategoryId],
+  );
+  return Boolean(value);
+}
+
+export interface CategoryWriteInput {
+  name: string;
+  slug: string;
+  parentId: string | null;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export async function insertCategory(input: CategoryWriteInput, executor: Exec) {
+  return one(
+    executor,
+    `INSERT INTO product_categories (name, slug, parent_id, sort_order, is_active)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, parent_id, name, slug, sort_order, is_active,
+               0::int AS product_count, 0::int AS depth`,
+    [input.name, input.slug, input.parentId, input.sortOrder, input.isActive],
+  );
+}
+
+export async function updateCategory(
+  categoryId: string,
+  data: Partial<CategoryWriteInput>,
+  executor: Exec,
+) {
+  const columns: string[] = [];
+  const values: unknown[] = [categoryId];
+
+  const push = (column: string, value: unknown) => {
+    values.push(value);
+    columns.push(`${column} = $${values.length}`);
+  };
+
+  if (data.name !== undefined) push('name', data.name);
+  if (data.slug !== undefined) push('slug', data.slug);
+  if (data.parentId !== undefined) push('parent_id', data.parentId);
+  if (data.sortOrder !== undefined) push('sort_order', data.sortOrder);
+  if (data.isActive !== undefined) push('is_active', data.isActive);
+
+  if (columns.length === 0) {
+    return findCategoryById(categoryId, executor);
+  }
+
+  return one(
+    executor,
+    `UPDATE product_categories
+        SET ${columns.join(', ')}
+      WHERE id = $1
+      RETURNING id, parent_id, name, slug, sort_order, is_active,
+                (SELECT COUNT(*)::int FROM products p
+                  WHERE p.category_id = product_categories.id AND p.deleted_at IS NULL) AS product_count`,
+    values,
+  );
+}
+
+export async function deleteCategory(categoryId: string, executor: Exec) {
+  return one(
+    executor,
+    `DELETE FROM product_categories WHERE id = $1 RETURNING id, name, slug`,
+    [categoryId],
+  );
+}
+
+export async function countCategoryProducts(categoryId: string, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM products WHERE category_id = $1`,
+    [categoryId],
+  );
+  return Number(value ?? 0);
+}
+
+export async function countChildCategories(categoryId: string, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int FROM product_categories WHERE parent_id = $1`,
+    [categoryId],
+  );
+  return Number(value ?? 0);
+}
+
 // --------------------------------------------------------------------------
 // Products (products)
 // --------------------------------------------------------------------------
@@ -59,6 +155,9 @@ export interface ProductFilters {
   categorySlug?: string;
   productKind?: string;
   isFeatured?: boolean;
+  isActive?: boolean;
+  /** Admin perlu melihat produk nonaktif; endpoint publik tetap default false. */
+  includeInactive?: boolean;
   branchId?: string;
   availableAt?: string;
   serviceType?: string;
@@ -101,6 +200,8 @@ export function buildProductQuery(
     filters.maxPriceIdr ?? null,
     filters.q ?? null,
     favoriteList,
+    filters.includeInactive === true,
+    filters.isActive ?? null,
   ];
 
   return {
@@ -169,7 +270,8 @@ export function buildProductQuery(
            WHERE r.product_id = p.id AND r.moderation_status = 'visible'
         ) rating ON true
        WHERE p.deleted_at IS NULL
-         AND p.is_active = true
+         AND ($12::boolean = true OR p.is_active = true)
+         AND ($13::boolean IS NULL OR p.is_active = $13)
          AND ($1::uuid IS NULL OR p.category_id = $1)
          AND (
            $2::uuid IS NULL
@@ -332,6 +434,22 @@ export async function listVariants(productId: string, executor: Exec = db) {
       WHERE product_id = $1
       ORDER BY sort_order ASC, price_idr ASC`,
     [productId],
+  );
+}
+
+/** Varian beberapa produk sekaligus untuk katalog POS (hindari N+1). */
+export async function listVariantsForProducts(
+  productIds: string[],
+  executor: Exec = db,
+) {
+  if (productIds.length === 0) return [];
+  return many(
+    executor,
+    `SELECT id, product_id, sku, name, price_idr, compare_at_price_idr, sort_order, is_default, is_active
+       FROM product_variants
+      WHERE product_id = ANY($1::uuid[])
+      ORDER BY product_id ASC, sort_order ASC, price_idr ASC`,
+    [productIds],
   );
 }
 

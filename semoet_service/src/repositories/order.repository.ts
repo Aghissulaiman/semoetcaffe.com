@@ -127,6 +127,8 @@ export interface ListOrderFilters {
   branchId?: string;
   from?: string;
   to?: string;
+  /** Pencarian kode order, nama/telepon pelanggan, atau kode meja. */
+  q?: string;
   sort: string;
 }
 
@@ -177,7 +179,13 @@ export async function countOrdersForUser(userId: string, filters: ListOrderFilte
   return Number(value ?? 0);
 }
 
-/** List order untuk staff/admin (branch-scoped). */
+/**
+ * List order untuk staff/admin (branch-scoped).
+ *
+ * Endpoint kasir membutuhkan isi keranjang, kode meja, dan transaksi
+ * pembayaran terakhir dalam satu response supaya UI tidak perlu memanggil
+ * detail satu per satu (N+1).
+ */
 export async function listOrdersForBranch(
   filters: ListOrderFilters & { userId?: string },
   pagination: Paging,
@@ -186,17 +194,82 @@ export async function listOrdersForBranch(
   return many(
     executor,
     `SELECT ${ORDER_COLUMNS},
-            b.name AS branch_name, u.display_name AS user_name, u.phone_e164 AS user_phone
+            b.name AS branch_name, b.code AS branch_code,
+            u.display_name AS user_name, u.phone_e164 AS user_phone,
+            o.delivery_recipient_name AS customer_name,
+            o.delivery_recipient_phone AS customer_phone,
+            t.table_code,
+            (SELECT COUNT(*)::int FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+            (SELECT jsonb_agg(jsonb_build_object(
+                       'id', oi.id,
+                       'productId', oi.product_id,
+                       'variantId', oi.variant_id,
+                       'productName', oi.product_name_snapshot,
+                       'variantName', oi.variant_name_snapshot,
+                       'sku', oi.sku_snapshot,
+                       'quantity', oi.quantity,
+                       'unitPriceIdr', oi.unit_price_idr,
+                       'modifiersTotalIdr', oi.modifiers_total_idr,
+                       'lineTotalIdr', oi.line_total_idr,
+                       'itemStatus', oi.item_status,
+                       'specialInstructions', oi.special_instructions,
+                       'modifiers', COALESCE((
+                         SELECT jsonb_agg(jsonb_build_object(
+                                  'id', oim.id,
+                                  'groupName', oim.modifier_group_name_snapshot,
+                                  'optionName', oim.modifier_option_name_snapshot,
+                                  'priceDeltaIdr', oim.unit_price_delta_idr,
+                                  'quantity', oim.quantity
+                                ) ORDER BY oim.id ASC)
+                           FROM order_item_modifiers oim
+                          WHERE oim.order_item_id = oi.id
+                       ), '[]'::jsonb)
+                     ) ORDER BY oi.created_at ASC)
+               FROM order_items oi
+              WHERE oi.order_id = o.id) AS items,
+            (SELECT jsonb_build_object(
+                       'id', p.id,
+                       'provider', p.provider,
+                       'paymentMethod', p.payment_method,
+                       'transactionType', p.transaction_type,
+                       'status', p.status,
+                       'amountIdr', p.amount_idr,
+                       'paidAt', p.paid_at,
+                       'createdAt', p.created_at,
+                       'rawProviderData', p.raw_provider_data
+                     )
+               FROM payment_transactions p
+              WHERE p.order_id = o.id
+              ORDER BY p.created_at DESC
+              LIMIT 1) AS latest_payment
        FROM orders o
        JOIN branches b ON b.id = o.branch_id
        JOIN users u ON u.id = o.user_id
+       LEFT JOIN cafe_tables t ON t.id = o.table_id
       WHERE ($1::text IS NULL OR o.order_status = $1)
         AND ($2::text IS NULL OR o.payment_status = $2)
         AND ($3::uuid IS NULL OR o.branch_id = $3)
         AND ($4::uuid IS NULL OR o.user_id = $4)
-      ORDER BY o.placed_at DESC
+        AND ($5::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $5::date)
+        AND ($6::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $6::date)
+        AND ($7::text IS NULL OR
+             o.order_number ILIKE '%' || $7 || '%' OR
+             u.display_name ILIKE '%' || $7 || '%' OR
+             COALESCE(o.delivery_recipient_name, u.display_name) ILIKE '%' || $7 || '%' OR
+             COALESCE(o.delivery_recipient_phone, u.phone_e164) ILIKE '%' || $7 || '%' OR
+             COALESCE(t.table_code, '') ILIKE '%' || $7 || '%')
+      ORDER BY
+        ${filters.sort === 'oldest' ? 'o.placed_at ASC' : filters.sort === 'total_desc' ? 'o.total_idr DESC' : 'o.placed_at DESC'}
       ${paginationSql(pagination)}`,
-    [filters.orderStatus ?? null, filters.paymentStatus ?? null, filters.branchId ?? null, filters.userId ?? null],
+    [
+      filters.orderStatus ?? null,
+      filters.paymentStatus ?? null,
+      filters.branchId ?? null,
+      filters.userId ?? null,
+      filters.from ?? null,
+      filters.to ?? null,
+      filters.q ?? null,
+    ],
   );
 }
 
@@ -208,11 +281,29 @@ export async function countOrdersForBranch(
     executor,
     `SELECT COUNT(*)::int
        FROM orders o
+       JOIN users u ON u.id = o.user_id
+       LEFT JOIN cafe_tables t ON t.id = o.table_id
       WHERE ($1::text IS NULL OR o.order_status = $1)
         AND ($2::text IS NULL OR o.payment_status = $2)
         AND ($3::uuid IS NULL OR o.branch_id = $3)
-        AND ($4::uuid IS NULL OR o.user_id = $4)`,
-    [filters.orderStatus ?? null, filters.paymentStatus ?? null, filters.branchId ?? null, filters.userId ?? null],
+        AND ($4::uuid IS NULL OR o.user_id = $4)
+        AND ($5::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date >= $5::date)
+        AND ($6::date IS NULL OR (o.placed_at AT TIME ZONE 'Asia/Jakarta')::date <= $6::date)
+        AND ($7::text IS NULL OR
+             o.order_number ILIKE '%' || $7 || '%' OR
+             u.display_name ILIKE '%' || $7 || '%' OR
+             COALESCE(o.delivery_recipient_name, u.display_name) ILIKE '%' || $7 || '%' OR
+             COALESCE(o.delivery_recipient_phone, u.phone_e164) ILIKE '%' || $7 || '%' OR
+             COALESCE(t.table_code, '') ILIKE '%' || $7 || '%')`,
+    [
+      filters.orderStatus ?? null,
+      filters.paymentStatus ?? null,
+      filters.branchId ?? null,
+      filters.userId ?? null,
+      filters.from ?? null,
+      filters.to ?? null,
+      filters.q ?? null,
+    ],
   );
   return Number(value ?? 0);
 }

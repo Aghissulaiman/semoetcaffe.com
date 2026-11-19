@@ -31,6 +31,7 @@ deliveryRouter.get(
   '/deliveries/active',
   authenticate,
   requireStaff,
+  requirePermission('delivery', 'read'),
   validate({ query: listActiveDeliveryQuerySchema }),
   asyncHandler(deliveryController.active),
 );
@@ -59,6 +60,7 @@ deliveryRouter.post(
   '/orders/:orderId/delivery/tracking',
   authenticate,
   requireStaff,
+  requirePermission('delivery', 'update'),
   writeLimiter,
   validate({ params: orderDeliveryParamSchema, body: deliveryTrackingSchema }),
   asyncHandler(deliveryController.addTrackingPoint),

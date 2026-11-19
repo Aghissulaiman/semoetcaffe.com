@@ -83,6 +83,33 @@ async function refreshDerivedViews(): Promise<void> {
   }
 }
 
+/**
+ * Reservasi lama menyimpan nama & nomor telepon pelanggan di catatan bebas
+ * (`special_requests` → "Nama: ..."/"No telp: ...") karena tabel belum punya
+ * kolom kontak. Salin sekali ke kolom baru supaya panel admin menampilkannya.
+ * Idempoten: hanya mengisi baris yang kolomnya masih kosong.
+ */
+async function backfillReservationContacts(): Promise<void> {
+  const phone = await db.query(
+    `UPDATE public.reservations
+        SET contact_phone = NULLIF(trim(substring(special_requests FROM 'No telp:\\s*([^\\n\\r]+)')), '')
+      WHERE contact_phone IS NULL
+        AND special_requests ~ 'No telp:'`,
+  );
+  const name = await db.query(
+    `UPDATE public.reservations
+        SET contact_name = NULLIF(trim(substring(special_requests FROM 'Nama:\\s*([^\\n\\r]+)')), '')
+      WHERE contact_name IS NULL
+        AND special_requests ~ 'Nama:'`,
+  );
+  if ((phone.rowCount ?? 0) > 0 || (name.rowCount ?? 0) > 0) {
+    logger.info(
+      { phones: phone.rowCount ?? 0, names: name.rowCount ?? 0 },
+      '[migrate] kontak reservasi lama disalin dari catatan',
+    );
+  }
+}
+
 /** Jumlah tabel di schema aplikasi, dipakai sebagai sanity check. */
 async function countTables(): Promise<number> {
   const value = await db.queryScalar<number>(
@@ -99,6 +126,7 @@ async function main(): Promise<void> {
 
   await ensureExtensions();
   await applySchema();
+  await backfillReservationContacts();
   await refreshDerivedViews();
 
   const tables = await countTables();

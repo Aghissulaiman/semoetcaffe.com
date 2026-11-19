@@ -49,7 +49,23 @@ function shapeSummary(row: RatingSummaryRow | null) {
   };
 }
 
-/** Baris review sudah di-camelCase oleh repository (rata-rata dihitung DB). */
+/**
+ * Rata-rata rating. Query produk sudah menghitung `average_rating` di DB,
+ * sedangkan query milik user dan INSERT hanya mengembalikan rating mentah,
+ * jadi nilainya dihitung di sini sebagai fallback.
+ */
+function averageRatingOf(row: Record<string, unknown>): number {
+  if (row.averageRating !== null && row.averageRating !== undefined) {
+    return num(row.averageRating);
+  }
+  const values = [row.foodRating, row.serviceRating, row.speedRating]
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) => num(value));
+  if (values.length === 0) return 0;
+  return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 100) / 100;
+}
+
+/** Baris review sudah di-camelCase oleh repository. */
 function shapeReview(row: Record<string, unknown>) {
   return {
     id: String(row.id),
@@ -62,7 +78,7 @@ function shapeReview(row: Record<string, unknown>) {
     foodRating: row.foodRating === null || row.foodRating === undefined ? null : num(row.foodRating),
     serviceRating: row.serviceRating === null || row.serviceRating === undefined ? null : num(row.serviceRating),
     speedRating: row.speedRating === null || row.speedRating === undefined ? null : num(row.speedRating),
-    averageRating: num(row.averageRating),
+    averageRating: averageRatingOf(row),
     text: strOrNull(row.reviewText),
     createdAt: toIsoOrNull(row.createdAt),
   };

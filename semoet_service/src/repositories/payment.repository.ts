@@ -2,8 +2,9 @@ import { db, many, one, scalar, type Exec } from './base.js';
 import { paginationSql, type Paging } from '../utils/pagination.js';
 
 const PAYMENT_COLUMNS = `
-  pt.id, pt.order_id, pt.provider, pt.payment_method, pt.provider_reference,
-  pt.idempotency_key, pt.transaction_type, pt.payment_purpose, pt.status,
+  pt.id, pt.order_id, pt.event_booking_id, pt.reservation_id, pt.provider,
+  pt.payment_method, pt.provider_reference,
+  pt.idempotency_key, pt.transaction_type, pt.payment_purpose, pt.payment_stage, pt.status,
   pt.amount_idr, pt.currency, pt.payment_url, pt.expires_at, pt.paid_at,
   pt.raw_provider_data, pt.created_at, pt.updated_at
 `;
@@ -11,12 +12,15 @@ const PAYMENT_COLUMNS = `
 export interface InsertPaymentInput {
   orderId?: string | null;
   eventBookingId?: string | null;
+  reservationId?: string | null;
   provider: string;
   paymentMethod: string;
   providerReference?: string | null;
   idempotencyKey?: string | null;
   transactionType: string;
   paymentPurpose: string;
+  /** Tahap DP reservasi: 'deposit' (DP1), 'deposit2', atau 'settlement'. */
+  paymentStage?: string | null;
   amountIdr: number;
   paymentUrl?: string | null;
   expiresAt?: Date | null;
@@ -27,20 +31,22 @@ export async function insertPayment(input: InsertPaymentInput, executor: Exec = 
   return one<{ id: string; status: string }>(
     executor,
     `INSERT INTO payment_transactions AS pt (
-        order_id, event_booking_id, provider, payment_method, provider_reference,
-        idempotency_key, transaction_type, payment_purpose, status, amount_idr,
+        order_id, event_booking_id, reservation_id, provider, payment_method, provider_reference,
+        idempotency_key, transaction_type, payment_purpose, payment_stage, status, amount_idr,
         payment_url, expires_at, raw_provider_data
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12,$13,$14)
      RETURNING ${PAYMENT_COLUMNS}`,
     [
       input.orderId ?? null,
       input.eventBookingId ?? null,
+      input.reservationId ?? null,
       input.provider,
       input.paymentMethod,
       input.providerReference ?? null,
       input.idempotencyKey ?? null,
       input.transactionType,
       input.paymentPurpose,
+      input.paymentStage ?? null,
       input.amountIdr,
       input.paymentUrl ?? null,
       input.expiresAt ?? null,
@@ -145,6 +151,7 @@ export async function updatePaymentStatus(
     paymentUrl?: string | null;
     rawProviderData?: Record<string, unknown> | null;
     providerReference?: string | null;
+    expiresAt?: Date | null;
   },
   executor: Exec = db,
 ) {

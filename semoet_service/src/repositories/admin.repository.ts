@@ -472,6 +472,7 @@ export async function listAuditLogs(
     entityType?: string;
     entityId?: string;
     requestId?: string;
+    q?: string;
     from?: string;
     to?: string;
   },
@@ -492,6 +493,12 @@ export async function listAuditLogs(
           AND ($5::text IS NULL OR al.request_id = $5)
           AND ($6::timestamptz IS NULL OR al.created_at >= $6::timestamptz)
           AND ($7::timestamptz IS NULL OR al.created_at <= $7::timestamptz)
+          AND ($8::text IS NULL OR
+               al.action ILIKE '%' || $8 || '%' OR
+               al.entity_type ILIKE '%' || $8 || '%' OR
+               al.entity_id::text ILIKE '%' || $8 || '%' OR
+               u.display_name ILIKE '%' || $8 || '%' OR
+               u.email ILIKE '%' || $8 || '%')
         ORDER BY al.created_at DESC, al.id DESC
         ${paginationSql(pagination)}`,
     [
@@ -502,6 +509,7 @@ export async function listAuditLogs(
       filters.requestId ?? null,
       filters.from ?? null,
       filters.to ?? null,
+      filters.q ?? null,
     ],
   );
 }
@@ -513,6 +521,7 @@ export async function countAuditLogs(
     entityType?: string;
     entityId?: string;
     requestId?: string;
+    q?: string;
     from?: string;
     to?: string;
   },
@@ -522,13 +531,20 @@ export async function countAuditLogs(
     executor,
     `SELECT COUNT(*)::int
        FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.actor_user_id
       WHERE ($1::uuid IS NULL OR al.actor_user_id = $1)
         AND ($2::text IS NULL OR al.action = $2)
         AND ($3::text IS NULL OR al.entity_type = $3)
         AND ($4::uuid IS NULL OR al.entity_id = $4)
         AND ($5::text IS NULL OR al.request_id = $5)
         AND ($6::timestamptz IS NULL OR al.created_at >= $6::timestamptz)
-        AND ($7::timestamptz IS NULL OR al.created_at <= $7::timestamptz)`,
+        AND ($7::timestamptz IS NULL OR al.created_at <= $7::timestamptz)
+        AND ($8::text IS NULL OR
+             al.action ILIKE '%' || $8 || '%' OR
+             al.entity_type ILIKE '%' || $8 || '%' OR
+             al.entity_id::text ILIKE '%' || $8 || '%' OR
+             u.display_name ILIKE '%' || $8 || '%' OR
+             u.email ILIKE '%' || $8 || '%')`,
     [
       filters.actorUserId ?? null,
       filters.action ?? null,
@@ -537,9 +553,31 @@ export async function countAuditLogs(
       filters.requestId ?? null,
       filters.from ?? null,
       filters.to ?? null,
+      filters.q ?? null,
     ],
   );
   return Number(value ?? 0);
+}
+
+/** Aktor, aksi, dan entitas yang pernah muncul di audit_logs. */
+export async function auditLogFacets(executor: Exec = db) {
+  const actors = await many(
+    executor,
+    `SELECT DISTINCT al.actor_user_id AS id, u.display_name AS name
+       FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.actor_user_id
+      WHERE al.actor_user_id IS NOT NULL
+      ORDER BY name ASC`,
+  );
+  const actions = await many(
+    executor,
+    `SELECT DISTINCT action FROM audit_logs ORDER BY action ASC`,
+  );
+  const entityTypes = await many(
+    executor,
+    `SELECT DISTINCT entity_type FROM audit_logs ORDER BY entity_type ASC`,
+  );
+  return { actors, actions, entityTypes };
 }
 
 export async function insertAuditLog(
@@ -921,13 +959,85 @@ export async function updateProduct(
 }
 
 /** Soft delete produk (riwayat pesanan tetap utuh). */
-export async function softDeleteProduct(productId: string, executor: Exec = db) {
+export async function softDeleteProduct(
+  productId: string,
+  deletedBy?: string | null,
+  executor: Exec = db,
+) {
   return one<{ id: string }>(
     executor,
-    `UPDATE products SET deleted_at = now(), is_active = false, updated_at = now()
+    `UPDATE products
+        SET deleted_at = now(), deleted_by = $2, is_active = false, updated_at = now()
       WHERE id = $1 AND deleted_at IS NULL
       RETURNING id`,
+    [productId, deletedBy ?? null],
+  );
+}
+
+/** Produk di tempat sampah (soft delete) beserta sisa hari sebelum purge. */
+export async function listDeletedProducts(
+  filters: { q?: string },
+  pagination: Paging,
+  executor: Exec = db,
+) {
+  return many(
+    executor,
+    `SELECT p.id, p.name, p.slug, p.product_kind, p.deleted_at, p.deleted_by,
+            c.name AS category_name,
+            u.display_name AS deleted_by_name,
+            (SELECT COUNT(*)::int FROM product_variants pv WHERE pv.product_id = p.id) AS variant_count,
+            GREATEST(0, 30 - EXTRACT(DAY FROM (now() - p.deleted_at))::int) AS days_left
+       FROM products p
+       JOIN product_categories c ON c.id = p.category_id
+       LEFT JOIN users u ON u.id = p.deleted_by
+      WHERE p.deleted_at IS NOT NULL
+        AND ($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' OR p.slug ILIKE '%' || $1 || '%')
+      ORDER BY p.deleted_at DESC
+      ${paginationSql(pagination)}`,
+    [filters.q ?? null],
+  );
+}
+
+export async function countDeletedProducts(filters: { q?: string }, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int
+       FROM products p
+      WHERE p.deleted_at IS NOT NULL
+        AND ($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' OR p.slug ILIKE '%' || $1 || '%')`,
+    [filters.q ?? null],
+  );
+  return Number(value ?? 0);
+}
+
+export async function restoreProduct(productId: string, executor: Exec = db) {
+  return one<{ id: string }>(
+    executor,
+    `UPDATE products
+        SET deleted_at = NULL, deleted_by = NULL, is_active = true, updated_at = now()
+      WHERE id = $1 AND deleted_at IS NOT NULL
+      RETURNING id`,
     [productId],
+  );
+}
+
+/** Hapus permanen satu produk (hanya yang sudah ada di tempat sampah). */
+export async function purgeProduct(productId: string, executor: Exec = db) {
+  return one<{ id: string; name: string }>(
+    executor,
+    `DELETE FROM products WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id, name`,
+    [productId],
+  );
+}
+
+/** Bersihkan produk yang sudah di tempat sampah lebih dari 30 hari. */
+export async function purgeExpiredProducts(executor: Exec = db) {
+  return many(
+    executor,
+    `DELETE FROM products
+      WHERE deleted_at IS NOT NULL
+        AND deleted_at < now() - interval '30 days'
+      RETURNING id, name`,
   );
 }
 

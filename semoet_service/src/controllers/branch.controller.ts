@@ -38,7 +38,14 @@ export async function detail(req: Request, res: Response): Promise<Response> {
 // GET /branches/:id/areas
 export async function areas(req: Request, res: Response): Promise<Response> {
   const { id } = getParams<{ id: string }>(req);
-  const data = await branchService.listAreas(id, req.query.isActive === 'true');
+  // Tanpa parameter eksplisit, kembalikan semua area (aktif maupun non-aktif
+  // tetap ditandai lewat field isActive). Sebelumnya `false` dikirim selalu
+  // sehingga daftar area tampak kosong.
+  const isActive =
+    req.query.isActive === undefined || req.query.isActive === ''
+      ? undefined
+      : req.query.isActive === 'true';
+  const data = await branchService.listAreas(id, isActive);
   return sendSuccess(res, data);
 }
 

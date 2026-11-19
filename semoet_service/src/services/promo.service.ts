@@ -1,6 +1,7 @@
 import { withTransaction } from '../config/database.js';
 import { VOUCHER_STATUS, type DiscountType, type VoucherStatus } from '../config/constants.js';
 import { conflict, notFound, unprocessable } from '../errors/AppError.js';
+import * as adminRepo from '../repositories/admin.repository.js';
 import * as promoRepo from '../repositories/promo.repository.js';
 import { generateVoucherCode } from '../utils/codeGenerator.js';
 import { calculateDiscountAmount } from '../utils/money.js';
@@ -8,8 +9,11 @@ import { buildPaginationMeta, parsePagination, type Pagination } from '../utils/
 import { bool, iso, json, num, str, strOrNull } from '../utils/serialize.js';
 import type {
   ClaimVoucherInput,
+  CreateAdminPromoInput,
+  ListAdminPromoQuery,
   ListPromoQuery,
   ListVoucherQuery,
+  UpdateAdminPromoInput,
   ValidateVoucherInput,
 } from '../validators/promo.validator.js';
 
@@ -22,9 +26,12 @@ export interface Paginated<T> {
 // Helper shaping
 // --------------------------------------------------------------------------
 function shapePromo(row: Record<string, unknown>) {
+  const code = strOrNull(row.code);
   return {
     id: str(row.id),
-    code: strOrNull(row.code),
+    code,
+    /** voucher = pakai kode; direct = diskon menu otomatis tanpa kode. */
+    mode: code ? 'voucher' : 'direct',
     name: str(row.name),
     description: strOrNull(row.description),
     discountType: str(row.discountType),
@@ -369,4 +376,383 @@ export async function validateVoucher(userId: string, input: ValidateVoucherInpu
   }
 
   return build(null);
+}
+// --------------------------------------------------------------------------
+// Admin: CRUD promo (voucher code & diskon langsung menu)
+// --------------------------------------------------------------------------
+export interface PromoAuditContext {
+  requestId?: string | null;
+  ipAddress?: string | null;
+}
+
+function writeAudit(
+  entry: {
+    actorUserId: string;
+    action: string;
+    promoId: string;
+    oldData?: unknown;
+    newData?: unknown;
+  },
+  audit: PromoAuditContext,
+  executor: Parameters<typeof adminRepo.insertAuditLog>[1],
+) {
+  return adminRepo.insertAuditLog(
+    {
+      actorUserId: entry.actorUserId,
+      action: entry.action,
+      entityType: 'promo',
+      entityId: entry.promoId,
+      oldData: entry.oldData ?? null,
+      newData: entry.newData ?? null,
+      requestId: audit.requestId ?? null,
+      ipAddress: audit.ipAddress ?? null,
+    },
+    executor,
+  );
+}
+
+function parseRequiredDate(value: string, field: string): Date {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw unprocessable(`Format ${field} tidak valid`);
+  }
+  return date;
+}
+
+function uniqueIds(ids: string[] | undefined): string[] {
+  return [...new Set(ids ?? [])];
+}
+
+function assertPromoWrite(
+  input: {
+    code: string | null;
+    discountType: string;
+    discountValue: number;
+    startsAt: Date;
+    endsAt: Date;
+    minimumOrderIdr: number;
+    productIds: string[];
+    categoryIds: string[];
+  },
+): void {
+  if (input.endsAt.getTime() <= input.startsAt.getTime()) {
+    throw unprocessable('Waktu selesai harus setelah waktu mulai', [
+      { field: 'endsAt', message: 'Periode promo tidak valid' },
+    ]);
+  }
+  if (input.discountType === 'percentage' && input.discountValue > 100) {
+    throw unprocessable('Diskon persentase maksimal 100%', [
+      { field: 'discountValue', message: 'Nilai persentase terlalu besar' },
+    ]);
+  }
+  if (input.code === null) {
+    if (input.productIds.length + input.categoryIds.length === 0) {
+      throw unprocessable('Pilih minimal satu menu atau kategori untuk diskon langsung', [
+        { field: 'productIds', message: 'Sasaran diskon menu wajib dipilih' },
+      ]);
+    }
+    if (input.discountType === 'free_item') {
+      throw unprocessable('Diskon menu langsung hanya mendukung persentase atau nominal', [
+        { field: 'discountType', message: 'Jenis diskon tidak didukung' },
+      ]);
+    }
+    if (input.minimumOrderIdr > 0) {
+      throw unprocessable('Diskon menu langsung tidak memakai minimum belanja', [
+        { field: 'minimumOrderIdr', message: 'Minimum belanja harus 0' },
+      ]);
+    }
+  }
+}
+
+async function assertNoOverlappingAutoPromo(
+  promoId: string | null,
+  input: { code: string | null; isActive: boolean; startsAt: Date; endsAt: Date },
+  executor: Parameters<typeof promoRepo.findOverlappingAutoPromo>[3],
+): Promise<void> {
+  if (input.code !== null || !input.isActive) return;
+
+  const overlapping = await promoRepo.findOverlappingAutoPromo(
+    promoId,
+    input.startsAt,
+    input.endsAt,
+    executor,
+  );
+  if (overlapping) {
+    throw conflict(
+      `Masih ada diskon menu aktif pada periode tersebut (${str(overlapping.name)}). Nonaktifkan atau ubah periodenya terlebih dahulu.`,
+    );
+  }
+}
+
+async function assertPromoCodeAvailable(code: string | null, excludeId: string | null): Promise<void> {
+  if (!code) return;
+
+  const existing = await promoRepo.findPromoByCode(code);
+  if (existing && str(existing.id) !== excludeId) {
+    throw conflict(`Kode promo '${code}' sudah dipakai promo lain`);
+  }
+}
+
+function shapeAdminPromo(
+  row: Record<string, unknown>,
+  eligibility: Record<string, unknown>[],
+) {
+  const promo = shapePromo(row);
+
+  return {
+    ...promo,
+    eligibleProducts: eligibility
+      .filter((item) => item.productId)
+      .map((item) => ({
+        id: str(item.productId),
+        name: strOrNull(item.productName),
+        slug: strOrNull(item.productSlug),
+      })),
+    eligibleCategories: eligibility
+      .filter((item) => item.categoryId)
+      .map((item) => ({
+        id: str(item.categoryId),
+        name: strOrNull(item.categoryName),
+        slug: strOrNull(item.categorySlug),
+      })),
+    remainingQuota: remainingQuota(row),
+  };
+}
+
+export async function listAdminPromos(query: ListAdminPromoQuery): Promise<Paginated<unknown>> {
+  const paging = parsePagination(query);
+  const filters: promoRepo.ListPromoFilters = {
+    isActive: query.isActive,
+    discountType: query.discountType,
+    currentlyValid: false,
+    q: query.q,
+    hasCode: query.mode === 'voucher' ? true : query.mode === 'direct' ? false : undefined,
+  };
+
+  const rows = await promoRepo.listPromos(filters, paging);
+  const total = await promoRepo.countPromos(filters);
+
+  const pagination: Pagination = {
+    page: paging.page,
+    limit: paging.limit,
+    offset: paging.offset,
+    total,
+  };
+
+  return {
+    items: rows.map((row) => shapePromo(row as Record<string, unknown>)),
+    meta: buildPaginationMeta(pagination),
+  };
+}
+
+export async function getAdminPromo(promoId: string) {
+  const row = await promoRepo.findPromoById(promoId);
+  if (!row) throw notFound('Promo', promoId);
+
+  const eligibility = await promoRepo.listEligibility(promoId);
+  return shapeAdminPromo(row as Record<string, unknown>, eligibility);
+}
+
+export async function createAdminPromo(
+  input: CreateAdminPromoInput,
+  actorUserId: string,
+  audit: PromoAuditContext = {},
+) {
+  const code = input.code ?? null;
+  const productIds = uniqueIds(input.productIds);
+  const categoryIds = uniqueIds(input.categoryIds);
+  const startsAt = parseRequiredDate(input.startsAt, 'waktu mulai');
+  const endsAt = parseRequiredDate(input.endsAt, 'waktu selesai');
+
+  const writeInput: promoRepo.PromoWriteInput = {
+    code,
+    name: input.name,
+    description: input.description ?? null,
+    discountType: input.discountType,
+    discountValue: input.discountValue,
+    minimumOrderIdr: input.minimumOrderIdr,
+    maximumDiscountIdr: input.maximumDiscountIdr ?? null,
+    startsAt,
+    endsAt,
+    globalQuota: input.globalQuota ?? null,
+    perUserQuota: input.perUserQuota ?? null,
+    rules: {},
+    isActive: input.isActive,
+  };
+
+  assertPromoWrite({ ...writeInput, productIds, categoryIds });
+
+  return withTransaction(async (tx) => {
+    await assertPromoCodeAvailable(code, null);
+    await assertNoOverlappingAutoPromo(null, writeInput, tx);
+
+    const created = await promoRepo.insertPromo(writeInput, tx);
+    if (!created) throw unprocessable('Promo gagal disimpan, coba lagi');
+
+    const promoId = str(created.id);
+    await promoRepo.replaceEligibility(promoId, { productIds, categoryIds }, tx);
+
+    await writeAudit(
+      {
+        actorUserId,
+        action: 'admin.promo.create',
+        promoId,
+        newData: {
+          name: writeInput.name,
+          code,
+          mode: code ? 'voucher' : 'direct',
+          isActive: writeInput.isActive,
+          productIds,
+          categoryIds,
+        },
+      },
+      audit,
+      tx,
+    );
+
+    const eligibility = await promoRepo.listEligibility(promoId, tx);
+    return shapeAdminPromo(created as Record<string, unknown>, eligibility);
+  });
+}
+
+export async function updateAdminPromo(
+  promoId: string,
+  input: UpdateAdminPromoInput,
+  actorUserId: string,
+  audit: PromoAuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const existing = await promoRepo.findPromoById(promoId, tx);
+    if (!existing) throw notFound('Promo', promoId);
+
+    const current = existing as Record<string, unknown>;
+    const existingEligibility = await promoRepo.listEligibility(promoId, tx);
+    const existingProductIds = existingEligibility
+      .filter((item) => item.productId)
+      .map((item) => str(item.productId));
+    const existingCategoryIds = existingEligibility
+      .filter((item) => item.categoryId)
+      .map((item) => str(item.categoryId));
+
+    const code = input.code === undefined ? strOrNull(current.code) : input.code;
+    const productIds = input.productIds === undefined
+      ? existingProductIds
+      : uniqueIds(input.productIds);
+    const categoryIds = input.categoryIds === undefined
+      ? existingCategoryIds
+      : uniqueIds(input.categoryIds);
+
+    const startsAt = input.startsAt
+      ? parseRequiredDate(input.startsAt, 'waktu mulai')
+      : parseDate(current.startsAt) ?? new Date();
+    const endsAt = input.endsAt
+      ? parseRequiredDate(input.endsAt, 'waktu selesai')
+      : parseDate(current.endsAt) ?? new Date();
+
+    const writeInput: promoRepo.PromoWriteInput = {
+      code,
+      name: input.name ?? str(current.name),
+      description: input.description === undefined ? strOrNull(current.description) : input.description,
+      discountType: input.discountType ?? str(current.discountType),
+      discountValue: input.discountValue ?? num(current.discountValue),
+      minimumOrderIdr: input.minimumOrderIdr ?? num(current.minimumOrderIdr),
+      maximumDiscountIdr: input.maximumDiscountIdr === undefined
+        ? (current.maximumDiscountIdr === null || current.maximumDiscountIdr === undefined
+            ? null
+            : num(current.maximumDiscountIdr))
+        : input.maximumDiscountIdr,
+      startsAt,
+      endsAt,
+      globalQuota: input.globalQuota === undefined
+        ? (current.globalQuota === null || current.globalQuota === undefined
+            ? null
+            : num(current.globalQuota))
+        : input.globalQuota,
+      perUserQuota: input.perUserQuota === undefined
+        ? (current.perUserQuota === null || current.perUserQuota === undefined
+            ? null
+            : num(current.perUserQuota))
+        : input.perUserQuota,
+      rules: json<Record<string, unknown>>(current.rules, {}),
+      isActive: input.isActive ?? bool(current.isActive),
+    };
+
+    assertPromoWrite({ ...writeInput, productIds, categoryIds });
+    await assertPromoCodeAvailable(code, promoId);
+    await assertNoOverlappingAutoPromo(promoId, writeInput, tx);
+
+    const updated = await promoRepo.updatePromo(promoId, writeInput, tx);
+    if (!updated) throw notFound('Promo', promoId);
+
+    if (input.productIds !== undefined || input.categoryIds !== undefined) {
+      await promoRepo.replaceEligibility(promoId, { productIds, categoryIds }, tx);
+    }
+
+    await writeAudit(
+      {
+        actorUserId,
+        action: 'admin.promo.update',
+        promoId,
+        oldData: {
+          name: str(current.name),
+          code: strOrNull(current.code),
+          isActive: bool(current.isActive),
+          startsAt: iso(current.startsAt),
+          endsAt: iso(current.endsAt),
+        },
+        newData: {
+          name: writeInput.name,
+          code,
+          mode: code ? 'voucher' : 'direct',
+          isActive: writeInput.isActive,
+          startsAt: iso(writeInput.startsAt),
+          endsAt: iso(writeInput.endsAt),
+          productIds,
+          categoryIds,
+        },
+      },
+      audit,
+      tx,
+    );
+
+    const eligibility = await promoRepo.listEligibility(promoId, tx);
+    return shapeAdminPromo(updated as Record<string, unknown>, eligibility);
+  });
+}
+
+export async function deleteAdminPromo(
+  promoId: string,
+  actorUserId: string,
+  audit: PromoAuditContext = {},
+) {
+  return withTransaction(async (tx) => {
+    const existing = await promoRepo.findPromoById(promoId, tx);
+    if (!existing) throw notFound('Promo', promoId);
+
+    const redemptions = await promoRepo.countPromoRedemptions(promoId, tx);
+    const vouchers = await promoRepo.countPromoVouchers(promoId, tx);
+    if (redemptions > 0 || vouchers > 0) {
+      throw conflict(
+        'Promo sudah pernah dipakai atau memiliki voucher. Nonaktifkan promo ini alih-alih menghapusnya.',
+      );
+    }
+
+    await promoRepo.deletePromo(promoId, tx);
+
+    await writeAudit(
+      {
+        actorUserId,
+        action: 'admin.promo.delete',
+        promoId,
+        oldData: {
+          name: str(existing.name),
+          code: strOrNull(existing.code),
+        },
+      },
+      audit,
+      tx,
+    );
+
+    return { id: promoId, deleted: true };
+  });
 }

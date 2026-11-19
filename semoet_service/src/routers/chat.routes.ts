@@ -29,6 +29,15 @@ chatRouter.get(
   asyncHandler(chatController.listConversations),
 );
 
+// GET /chat/conversations/mine (riwayat percakapan customer sendiri)
+chatRouter.get(
+  '/chat/conversations/mine',
+  authenticate,
+  readLimiter,
+  validate({ query: listConversationQuerySchema }),
+  asyncHandler(chatController.listMine),
+);
+
 // POST /chat/conversations (mulai percakapan baru, atau lanjutkan yang masih open)
 chatRouter.post(
   '/chat/conversations',

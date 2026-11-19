@@ -190,8 +190,8 @@ export async function updateBookingStatus(
   const assignments = columns.map((column, index) => `${column} = $${index + 3}`).join(', ');
   return one(
     executor,
-    `UPDATE event_bookings SET ${assignments}, updated_at = now()
-      WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)
+    `UPDATE event_bookings eb SET ${assignments}, updated_at = now()
+      WHERE eb.id = $1 AND ($2::uuid IS NULL OR eb.user_id = $2)
       RETURNING ${BOOKING_COLUMNS}`,
     [bookingId, userId, ...Object.values(data)],
   );
@@ -270,6 +270,144 @@ export async function countBookingsForBranch(filters: { status?: string; branchI
   return Number(value ?? 0);
 }
 
+// --------------------------------------------------------------------------
+// Admin: list all event bookings with filters
+// --------------------------------------------------------------------------
+export interface ListAdminEventBookingFilters {
+  branchId?: string;
+  status?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  q?: string;
+}
+
+export async function listAdminEventBookings(
+  filters: ListAdminEventBookingFilters,
+  pagination: { page: number; limit: number; offset: number },
+  executor: Exec = db,
+) {
+  return many(
+    executor,
+    `SELECT eb.id, eb.booking_number, eb.branch_id, b.name AS branch_name,
+            eb.event_type, eb.event_name, eb.starts_at, eb.ends_at, eb.guest_count,
+            eb.event_package_name_snapshot, eb.event_package_price_snapshot_idr,
+            eb.subtotal_idr, eb.deposit_idr, eb.status,
+            COALESCE(
+              (SELECT SUM(pt.amount_idr) FROM payment_transactions pt
+                WHERE pt.event_booking_id = eb.id
+                  AND pt.status = 'succeeded' AND pt.transaction_type = 'charge'), 0
+            )::bigint AS paid_idr,
+            u.display_name AS user_name, u.email AS user_email, u.phone_e164 AS user_phone,
+            eb.custom_requests, eb.created_at,
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                  'id', ebc.id,
+                  'cateringPackageId', ebc.catering_package_id,
+                  'packageName', ebc.package_name_snapshot,
+                  'pricePerPersonIdr', ebc.price_per_person_snapshot_idr,
+                  'guestCount', ebc.guest_count,
+                  'lineTotalIdr', ebc.line_total_idr
+              )) FROM event_booking_catering ebc WHERE ebc.event_booking_id = eb.id), '[]'
+            ) AS catering,
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                  'id', eba.id,
+                  'name', eba.name,
+                  'quantity', eba.quantity,
+                  'unitPriceIdr', eba.unit_price_idr,
+                  'lineTotalIdr', eba.line_total_idr
+              )) FROM event_booking_addons eba WHERE eba.event_booking_id = eb.id), '[]'
+            ) AS addons
+       FROM event_bookings eb
+       JOIN branches b ON b.id = eb.branch_id
+       JOIN users u ON u.id = eb.user_id
+      WHERE ($1::uuid IS NULL OR eb.branch_id = $1)
+        AND ($2::text IS NULL OR eb.status = $2)
+        AND ($3::date IS NULL OR (eb.starts_at AT TIME ZONE 'Asia/Jakarta')::date >= $3::date)
+        AND ($4::date IS NULL OR (eb.starts_at AT TIME ZONE 'Asia/Jakarta')::date <= $4::date)
+        AND ($5::text IS NULL OR eb.booking_number ILIKE '%' || $5 || '%'
+                                  OR u.display_name ILIKE '%' || $5 || '%'
+                                  OR u.email ILIKE '%' || $5 || '%'
+                                  OR u.phone_e164 ILIKE '%' || $5 || '%'
+                                  OR eb.event_name ILIKE '%' || $5 || '%')
+      ORDER BY eb.created_at DESC
+      LIMIT $6 OFFSET $7`,
+    [
+      filters.branchId ?? null,
+      filters.status ?? null,
+      filters.dateFrom ?? null,
+      filters.dateTo ?? null,
+      filters.q ?? null,
+      pagination.limit,
+      pagination.offset,
+    ],
+  );
+}
+
+export async function countAdminEventBookings(filters: ListAdminEventBookingFilters, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int
+       FROM event_bookings eb
+       JOIN users u ON u.id = eb.user_id
+      WHERE ($1::uuid IS NULL OR eb.branch_id = $1)
+        AND ($2::text IS NULL OR eb.status = $2)
+        AND ($3::date IS NULL OR (eb.starts_at AT TIME ZONE 'Asia/Jakarta')::date >= $3::date)
+        AND ($4::date IS NULL OR (eb.starts_at AT TIME ZONE 'Asia/Jakarta')::date <= $4::date)
+        AND ($5::text IS NULL OR eb.booking_number ILIKE '%' || $5 || '%'
+                                  OR u.display_name ILIKE '%' || $5 || '%'
+                                  OR u.email ILIKE '%' || $5 || '%'
+                                  OR u.phone_e164 ILIKE '%' || $5 || '%'
+                                  OR eb.event_name ILIKE '%' || $5 || '%')`,
+    [
+      filters.branchId ?? null,
+      filters.status ?? null,
+      filters.dateFrom ?? null,
+      filters.dateTo ?? null,
+      filters.q ?? null,
+    ],
+  );
+  return Number(value ?? 0);
+}
+
+export async function updateEventBookingStatus(
+  bookingId: string,
+  status: string,
+  note: string | null,
+  quoteIdr: number | null,
+  depositPercent: number | null,
+  executor: Exec = db,
+) {
+  const updates: string[] = ['status = $2', 'updated_at = now()'];
+  const params: (string | number | null)[] = [bookingId, status];
+  let paramIndex = 3;
+
+  if (note !== null) {
+    updates.push(`custom_requests = COALESCE(custom_requests, '') || '\n[Staff ' + now() + '] ' || $${paramIndex}`);
+    params.push(note);
+    paramIndex++;
+  }
+  if (quoteIdr !== null) {
+    updates.push(`event_package_price_snapshot_idr = $${paramIndex}`);
+    params.push(quoteIdr);
+    paramIndex++;
+    updates.push(`subtotal_idr = $${paramIndex}`);
+    params.push(quoteIdr);
+    paramIndex++;
+    if (depositPercent !== null) {
+      updates.push(`deposit_idr = ($${paramIndex - 1} * $${paramIndex} / 100)::bigint`);
+      params.push(depositPercent);
+      paramIndex++;
+    }
+  }
+
+  return one(
+    executor,
+    `UPDATE event_bookings eb SET ${updates.join(', ')} WHERE eb.id = $1 RETURNING ${BOOKING_COLUMNS}`,
+    params,
+  );
+}
+
 /** Konflik jadwal: cabang sudah punya event pada tanggal/waktu yang sama. */
 export async function findConflictingBookings(
   branchId: string,
@@ -284,8 +422,8 @@ export async function findConflictingBookings(
        FROM event_bookings
       WHERE branch_id = $1
         AND status NOT IN ('cancelled')
-        AND starts_at < COALESCE($3, $2 + interval '4 hours')
-        AND COALESCE(ends_at, starts_at + interval '4 hours') > $2
+        AND starts_at < COALESCE($3::timestamptz, $2::timestamptz + interval '4 hours')
+        AND COALESCE(ends_at, starts_at + interval '4 hours') > $2::timestamptz
         AND ($4::uuid IS NULL OR id <> $4)
       ORDER BY starts_at ASC`,
     [branchId, startsAt, endsAt, excludeBookingId],
@@ -335,13 +473,13 @@ export async function insertBookingAddon(
 export async function listBookingCatering(eventBookingId: string, executor: Exec = db) {
   return many(
     executor,
-    `SELECT id, event_booking_id, catering_package_id, package_name_snapshot,
-            price_per_person_snapshot_idr, guest_count, line_total_idr,
+    `SELECT ebc.id, ebc.event_booking_id, ebc.catering_package_id, ebc.package_name_snapshot,
+            ebc.price_per_person_snapshot_idr, ebc.guest_count, ebc.line_total_idr,
             cp.code AS package_code
        FROM event_booking_catering ebc
        LEFT JOIN catering_packages cp ON cp.id = ebc.catering_package_id
       WHERE ebc.event_booking_id = $1
-      ORDER BY package_name_snapshot`,
+      ORDER BY ebc.package_name_snapshot`,
     [eventBookingId],
   );
 }
@@ -393,4 +531,144 @@ export async function listBookedDates(branchId: string | undefined, from: Date, 
       ORDER BY date`,
     [branchId ?? null, from, to],
   );
+}
+
+/**
+ * Hapus booking event beserta riwayat pembayarannya. Baris katering & add-on
+ * ikut terhapus lewat cascade FK. payment_transactions memakai ON DELETE
+ * RESTRICT, jadi harus dihapus lebih dulu di dalam transaksi yang sama.
+ */
+export async function deleteEventBooking(bookingId: string, executor: Exec = db) {
+  await executor.query(`DELETE FROM payment_transactions WHERE event_booking_id = $1`, [bookingId]);
+  await executor.query(`DELETE FROM event_bookings WHERE id = $1`, [bookingId]);
+}
+
+// --------------------------------------------------------------------------
+// Agenda event (penanda tanggal: Ramadan, Lebaran, promo musiman, dsb)
+// --------------------------------------------------------------------------
+
+/**
+ * Tanggal disimpan sebagai `date`; di-cast ke teks supaya API selalu menerima
+ * "YYYY-MM-DD" tanpa terpengaruh timezone server.
+ */
+const AGENDA_COLUMNS = `id, title, description,
+       to_char(starts_on, 'YYYY-MM-DD') AS starts_on,
+       to_char(ends_on, 'YYYY-MM-DD') AS ends_on,
+       is_active, created_by, created_at, updated_at`;
+
+export interface ListEventAgendaFilters {
+  isActive?: boolean;
+  /** Hanya agenda yang beririsan dengan rentang ini. */
+  from?: string;
+  to?: string;
+  q?: string;
+}
+
+export async function listEventAgenda(
+  filters: ListEventAgendaFilters,
+  pagination: Paging,
+  executor: Exec = db,
+) {
+  return many(
+    executor,
+    `SELECT ${AGENDA_COLUMNS}
+       FROM event_agenda
+      WHERE ($1::boolean IS NULL OR is_active = $1)
+        AND ($2::date IS NULL OR ends_on >= $2::date)
+        AND ($3::date IS NULL OR starts_on <= $3::date)
+        AND ($4::text IS NULL OR title ILIKE '%' || $4 || '%'
+                                  OR description ILIKE '%' || $4 || '%')
+      ORDER BY starts_on ASC, title ASC
+      ${paginationSql(pagination)}`,
+    [filters.isActive ?? null, filters.from ?? null, filters.to ?? null, filters.q ?? null],
+  );
+}
+
+export async function countEventAgenda(filters: ListEventAgendaFilters, executor: Exec = db) {
+  const value = await scalar<number>(
+    executor,
+    `SELECT COUNT(*)::int
+       FROM event_agenda
+      WHERE ($1::boolean IS NULL OR is_active = $1)
+        AND ($2::date IS NULL OR ends_on >= $2::date)
+        AND ($3::date IS NULL OR starts_on <= $3::date)
+        AND ($4::text IS NULL OR title ILIKE '%' || $4 || '%'
+                                  OR description ILIKE '%' || $4 || '%')`,
+    [filters.isActive ?? null, filters.from ?? null, filters.to ?? null, filters.q ?? null],
+  );
+  return Number(value ?? 0);
+}
+
+export async function findEventAgendaById(agendaId: string, executor: Exec = db) {
+  return one(executor, `SELECT ${AGENDA_COLUMNS} FROM event_agenda WHERE id = $1`, [agendaId]);
+}
+
+export interface InsertEventAgendaInput {
+  title: string;
+  description: string | null;
+  startsOn: string;
+  endsOn: string;
+  isActive: boolean;
+  createdBy: string | null;
+}
+
+export async function insertEventAgenda(input: InsertEventAgendaInput, executor: Exec = db) {
+  return one(
+    executor,
+    `INSERT INTO event_agenda (title, description, starts_on, ends_on, is_active, created_by)
+     VALUES ($1, $2, $3::date, $4::date, $5, $6)
+     RETURNING ${AGENDA_COLUMNS}`,
+    [input.title, input.description, input.startsOn, input.endsOn, input.isActive, input.createdBy],
+  );
+}
+
+export interface UpdateEventAgendaInput {
+  title?: string;
+  description?: string | null;
+  startsOn?: string;
+  endsOn?: string;
+  isActive?: boolean;
+}
+
+/** Update parsial; hanya kolom yang dikirim yang ditulis. */
+export async function updateEventAgenda(
+  agendaId: string,
+  input: UpdateEventAgendaInput,
+  executor: Exec = db,
+) {
+  const assignments: string[] = [];
+  const params: unknown[] = [agendaId];
+
+  const push = (column: string, value: unknown, cast = '') => {
+    params.push(value);
+    assignments.push(`${column} = $${params.length}${cast}`);
+  };
+
+  if (input.title !== undefined) push('title', input.title);
+  if (input.description !== undefined) push('description', input.description);
+  if (input.startsOn !== undefined) push('starts_on', input.startsOn, '::date');
+  if (input.endsOn !== undefined) push('ends_on', input.endsOn, '::date');
+  if (input.isActive !== undefined) push('is_active', input.isActive);
+
+  if (assignments.length === 0) {
+    return findEventAgendaById(agendaId, executor);
+  }
+
+  return one(
+    executor,
+    `UPDATE event_agenda
+        SET ${assignments.join(', ')}, updated_at = now()
+      WHERE id = $1
+      RETURNING ${AGENDA_COLUMNS}`,
+    params,
+  );
+}
+
+export async function deleteEventAgenda(agendaId: string, executor: Exec = db) {
+  const deleted = await scalar<string>(
+    executor,
+    `DELETE FROM event_agenda WHERE id = $1 RETURNING id`,
+    [agendaId],
+  );
+  return Boolean(deleted);
 }

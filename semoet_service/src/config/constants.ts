@@ -40,11 +40,13 @@ export const RESOURCES = {
   RESERVATION: 'reservation',
   EVENT: 'event',
   INVENTORY: 'inventory',
+  PURCHASE: 'purchase',
   MOMENT: 'moment',
   CHAT: 'chat',
   GAMIFICATION: 'gamification',
   AI: 'ai',
   AUDIT: 'audit',
+  EXPENSE: 'expense',
 } as const;
 
 export const ACTIONS = {
@@ -54,6 +56,23 @@ export const ACTIONS = {
   DELETE: 'delete',
   MANAGE: 'manage',
 } as const;
+
+// --------------------------------------------------------------------------
+// Pengeluaran operasional
+// --------------------------------------------------------------------------
+/** Kategori pengeluaran yang dihitung admin. */
+export const EXPENSE_CATEGORIES = [
+  { code: 'bahan_baku', label: 'Bahan Baku' },
+  { code: 'alat_alat_masak', label: 'Alat & Peralatan' },
+  { code: 'kemasan', label: 'Kemasan' },
+  { code: 'utilitas', label: 'Utilitas' },
+  { code: 'sewa', label: 'Sewa' },
+  { code: 'gaji', label: 'Gaji' },
+  { code: 'pemasaran', label: 'Pemasaran' },
+  { code: 'transportasi', label: 'Transportasi' },
+  { code: 'lainnya', label: 'Lainnya' },
+] as const;
+export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number]['code'];
 
 // --------------------------------------------------------------------------
 // Orders & payment
@@ -116,6 +135,7 @@ export const PAYMENT_PURPOSE = [
   'event_installment',
   'event_final',
   'event_refund',
+  'reservation_deposit',
 ] as const;
 export type PaymentPurpose = Union<typeof PAYMENT_PURPOSE>;
 
@@ -221,6 +241,27 @@ export const MOVEMENT_TYPE = [
 export type MovementType = Union<typeof MOVEMENT_TYPE>;
 
 // --------------------------------------------------------------------------
+// Purchasing (supplier, purchase order, penerimaan, hutang)
+// --------------------------------------------------------------------------
+export const PURCHASE_ORDER_STATUS = [
+  'draft',
+  'ordered',
+  'partial',
+  'received',
+  'cancelled',
+] as const;
+export type PurchaseOrderStatus = Union<typeof PURCHASE_ORDER_STATUS>;
+
+export const PURCHASE_PAYMENT_STATUS = ['unpaid', 'partial', 'paid'] as const;
+export type PurchasePaymentStatus = Union<typeof PURCHASE_PAYMENT_STATUS>;
+
+export const GOODS_RECEIPT_STATUS = ['draft', 'posted', 'cancelled'] as const;
+export type GoodsReceiptStatus = Union<typeof GOODS_RECEIPT_STATUS>;
+
+export const SUPPLIER_PAYMENT_METHOD = ['transfer', 'cash', 'qris', 'other'] as const;
+export type SupplierPaymentMethod = Union<typeof SUPPLIER_PAYMENT_METHOD>;
+
+// --------------------------------------------------------------------------
 // Community, chat, gamification, AI
 // --------------------------------------------------------------------------
 export const MOMENT_MODERATION_STATUS = ['pending', 'approved', 'rejected', 'hidden'] as const;
@@ -239,6 +280,10 @@ export type DeviceProvider = Union<typeof DEVICE_PROVIDER>;
 
 export const CHAT_STATUS = ['open', 'waiting', 'resolved', 'closed'] as const;
 export type ChatStatus = Union<typeof CHAT_STATUS>;
+
+/** Kategori percakapan: keluhan (complaint) atau chat biasa (general). */
+export const CHAT_CATEGORY = ['general', 'complaint'] as const;
+export type ChatCategory = Union<typeof CHAT_CATEGORY>;
 
 export const CHAT_SENDER_TYPE = ['customer', 'staff', 'assistant', 'system'] as const;
 export type ChatSenderType = Union<typeof CHAT_SENDER_TYPE>;

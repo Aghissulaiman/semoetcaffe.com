@@ -1,6 +1,13 @@
 import { z } from 'zod';
-import { PRODUCT_KIND } from '../config/constants.js';
-import { dateSchema, uuidSchema } from './common.validator.js';
+import {
+  AREA_TYPE,
+  EVENT_BOOKING_STATUS,
+  EVENT_TYPE,
+  ORDER_STATUS,
+  PRODUCT_KIND,
+} from '../config/constants.js';
+import { dateSchema, isoDateTimeInFuture, uuidSchema } from './common.validator.js';
+import { addonLineSchema, cateringLineSchema } from './event.validator.js';
 
 // --------------------------------------------------------------------------
 // Dashboard
@@ -46,6 +53,30 @@ export const reportProductQuerySchema = z.object({
 });
 
 // --------------------------------------------------------------------------
+// Antrean pesanan kasir (staff/admin)
+// --------------------------------------------------------------------------
+export const listAdminOrderQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  orderStatus: z.enum(ORDER_STATUS).optional(),
+  paymentStatus: z
+    .enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed'])
+    .optional(),
+  branchId: uuidSchema.optional(),
+  from: z.string().trim().optional(),
+  to: z.string().trim().optional(),
+  q: z.string().trim().max(120).optional(),
+  sort: z.enum(['recent', 'oldest', 'total_desc']).default('recent'),
+});
+
+/** Pembayaran manual yang dicatat kasir (tunai/QRIS/kartu/transfer). */
+export const recordManualPaymentSchema = z.object({
+  paymentMethod: z.enum(['cash', 'qris', 'card', 'bank_transfer']),
+  amountReceivedIdr: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
+// --------------------------------------------------------------------------
 // Harga modal (HPP) varian produk
 // --------------------------------------------------------------------------
 export const updateVariantCostsSchema = z.object({
@@ -71,6 +102,7 @@ export const auditLogQuerySchema = z.object({
   entityType: z.string().trim().max(80).optional(),
   entityId: uuidSchema.optional(),
   requestId: z.string().trim().max(100).optional(),
+  q: z.string().trim().max(120).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
 });
@@ -199,6 +231,41 @@ const productImageFields = {
   imageAltText: z.string().trim().max(200).nullish(),
 };
 
+// --------------------------------------------------------------------------
+// Kategori menu (admin)
+// --------------------------------------------------------------------------
+const categorySlugField = z
+  .string()
+  .trim()
+  .max(160)
+  .regex(/^[a-z0-9-]+$/, 'Slug hanya boleh huruf kecil, angka, dan tanda minus');
+
+export const createCategorySchema = z.object({
+  name: z.string().trim().min(2, 'Nama kategori minimal 2 karakter').max(120),
+  slug: categorySlugField.optional(),
+  parentId: uuidSchema.nullable().optional(),
+  sortOrder: z.coerce.number().int().min(0).max(9999).default(0),
+  isActive: z.boolean().default(true),
+});
+
+export const updateCategorySchema = z
+  .object({
+    name: z.string().trim().min(2, 'Nama kategori minimal 2 karakter').max(120).optional(),
+    slug: categorySlugField.optional(),
+    parentId: uuidSchema.nullable().optional(),
+    sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada perubahan yang dikirim',
+    path: ['name'],
+  });
+
+export const categoryIdParamSchema = z.object({ id: uuidSchema });
+
+export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
+export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
+
 export const createProductSchema = z.object({
   name: z.string().trim().min(2, 'Nama produk minimal 2 karakter').max(160),
   slug: z
@@ -252,11 +319,243 @@ export const updateVariantSchema = z
     path: ['name'],
   });
 
+// --------------------------------------------------------------------------
+// Reservasi (Admin)
+// --------------------------------------------------------------------------
+export const listAdminReservationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  branchId: uuidSchema.optional(),
+  status: z.enum(['requested', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show']).optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  q: z.string().trim().max(120).optional(),
+});
+
+export const updateReservationStatusSchema = z.object({
+  status: z.enum(['requested', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show']).optional(),
+  note: z.string().trim().max(500).optional(),
+  roomIds: z.array(uuidSchema).max(10).optional(),
+  tableIds: z.array(uuidSchema).max(20).optional(),
+  /** DP1 (uang muka awal) — status & bukti saja; nominal dihitung sistem. */
+  depositStatus: z.enum(['unpaid', 'pending', 'paid', 'refunded']).optional(),
+  depositProofUrl: z.string().trim().max(1000).nullish(),
+  depositProofStorageKey: z.string().trim().max(500).nullish(),
+  depositNote: z.string().trim().max(500).nullish(),
+  /** DP2 (setelah reservasi dikonfirmasi) — nominal dihitung sistem. */
+  deposit2Status: z.enum(['unpaid', 'pending', 'paid', 'refunded']).optional(),
+  deposit2ProofUrl: z.string().trim().max(1000).nullish(),
+  deposit2ProofStorageKey: z.string().trim().max(500).nullish(),
+  deposit2Note: z.string().trim().max(500).nullish(),
+  /** Pelunasan (tahap akhir) — nominal dihitung sistem. */
+  settlementStatus: z.enum(['unpaid', 'pending', 'paid', 'refunded']).optional(),
+  settlementProofUrl: z.string().trim().max(1000).nullish(),
+  settlementProofStorageKey: z.string().trim().max(500).nullish(),
+  settlementNote: z.string().trim().max(500).nullish(),
+});
+
+/** Buat link pembayaran DP lewat Midtrans (dipakai CS). Nominal dihitung sistem. */
+export const createReservationDepositChargeSchema = z.object({
+  /** Tahap yang dibayar: DP1, DP2 setelah konfirmasi, atau pelunasan. */
+  stage: z.enum(['deposit', 'deposit2', 'settlement']).default('deposit'),
+  paymentMethod: z.enum(['qris', 'virtual_account', 'bank_transfer', 'ewallet', 'card']).optional(),
+  idempotencyKey: z.string().trim().min(8).max(128).optional(),
+});
+
+/**
+ * Tambah reservasi atas nama pelanggan (dibuat staf, mis. booking via telepon).
+ * Berbeda dari endpoint customer, di sini staf memilih pelanggan dan boleh
+ * langsung menetapkan status, serta tidak wajib ada meja tersedia.
+ */
+export const createAdminReservationSchema = z.object({
+  /** Opsional: bila kosong, reservasi dimiliki staf yang membuatnya. */
+  userId: uuidSchema.optional(),
+  branchId: uuidSchema,
+  areaId: uuidSchema.nullable().optional(),
+  reservedFor: z.string().trim().min(1, 'Waktu reservasi wajib diisi'),
+  durationMinutes: z.coerce.number().int().min(15).max(720).default(120),
+  guestCount: z.coerce.number().int().min(1).max(1000),
+  seatingPreference: z.enum(['indoor', 'outdoor', 'private_room', 'any']).nullable().optional(),
+  status: z.enum(['requested', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show']).default('confirmed'),
+  specialRequests: z.string().trim().max(1000).nullable().optional(),
+  /** Kontak tamu untuk reservasi walk-in/telepon. */
+  contactName: z.string().trim().max(120).nullable().optional(),
+  contactPhone: z.string().trim().max(30).nullable().optional(),
+  tableIds: z.array(uuidSchema).max(20).default([]),
+});
+
+export const reservationIdParamSchema = z.object({ id: uuidSchema });
+
+// Ketentuan DP reservasi: DP1 (persen + batas nominal), DP2 (persen dari sisa).
+export const updateDepositSettingsSchema = z
+  .object({
+    dp1Percent: z.number().min(0).max(100),
+    dp1MinIdr: z.number().int().min(0).max(1_000_000_000),
+    dp1MaxIdr: z.number().int().min(0).max(1_000_000_000),
+    dp2Percent: z.number().min(0).max(100),
+  })
+  .refine((value) => value.dp1MinIdr <= value.dp1MaxIdr, {
+    message: 'Batas minimum DP1 tidak boleh lebih besar dari batas maksimum',
+    path: ['dp1MinIdr'],
+  });
+
+// --------------------------------------------------------------------------
+// Booking Event (Admin)
+// --------------------------------------------------------------------------
+export const listAdminEventBookingQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  branchId: uuidSchema.optional(),
+  status: z.enum(['requested', 'quoted', 'awaiting_deposit', 'confirmed', 'in_progress', 'completed', 'cancelled']).optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  q: z.string().trim().max(120).optional(),
+});
+
+export const updateEventBookingStatusSchema = z.object({
+  status: z.enum(['requested', 'quoted', 'awaiting_deposit', 'confirmed', 'in_progress', 'completed', 'cancelled']),
+  note: z.string().trim().max(500).optional(),
+  quoteIdr: z.coerce.number().int().min(0).optional(),
+  depositPercent: z.coerce.number().min(0).max(100).optional(),
+});
+
+export const eventBookingIdParamSchema = z.object({ id: uuidSchema });
+
+/**
+ * Tambah booking event atas nama pelanggan (dibuat staf). Sama seperti endpoint
+ * customer, namun staf memilih pelanggan dan boleh langsung menetapkan status.
+ */
+export const createAdminEventBookingSchema = z
+  .object({
+    userId: uuidSchema,
+    branchId: uuidSchema,
+    eventPackageId: uuidSchema.nullable().optional(),
+    eventType: z.enum(EVENT_TYPE),
+    eventName: z.string().trim().max(150).nullable().optional(),
+    startsAt: isoDateTimeInFuture,
+    endsAt: z.string().optional(),
+    guestCount: z.coerce.number().int().min(1).max(10_000),
+    customRequests: z.string().trim().max(2000).nullable().optional(),
+    catering: z.array(cateringLineSchema).max(20).default([]),
+    addons: z.array(addonLineSchema).max(30).default([]),
+    depositPercent: z.coerce.number().min(0).max(100).default(30),
+    status: z.enum(EVENT_BOOKING_STATUS).optional(),
+  })
+  .refine((value) => !value.endsAt || new Date(value.endsAt) > new Date(value.startsAt), {
+    message: 'endsAt harus setelah startsAt',
+    path: ['endsAt'],
+  });
+
+// --------------------------------------------------------------------------
+// Chat (Admin)
+// --------------------------------------------------------------------------
+export const listAdminChatConversationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  status: z.enum(['open', 'waiting', 'resolved', 'closed']).optional(),
+  category: z.enum(['general', 'complaint']).optional(),
+  assignedStaffId: uuidSchema.optional(),
+  q: z.string().trim().max(120).optional(),
+});
+
+export const conversationIdParamSchema = z.object({ id: uuidSchema });
+
+// --------------------------------------------------------------------------
+// Moment Moderation (Admin)
+// --------------------------------------------------------------------------
+export const listAdminMomentQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  moderationStatus: z.enum(['pending', 'approved', 'rejected', 'hidden']).optional(),
+  q: z.string().trim().max(120).optional(),
+});
+
+export const momentIdParamSchema = z.object({ id: uuidSchema });
+
+export const moderateMomentSchema = z.object({
+  id: uuidSchema.optional(),
+  momentId: uuidSchema.optional(),
+  moderationStatus: z.enum(['pending', 'approved', 'rejected', 'hidden']),
+  note: z.string().trim().max(500).optional(),
+});
+
 export const productIdParamSchema = z.object({ id: uuidSchema });
 export const productVariantParamSchema = z.object({ id: uuidSchema, variantId: uuidSchema });
 
+/** Daftar produk di tempat sampah (soft delete) + pencarian. */
+export const listDeletedProductQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  q: z.string().trim().max(120).optional(),
+});
+
+// --------------------------------------------------------------------------
+// CRUD area tempat duduk & meja (dipakai halaman Cabang > Area & Meja)
+// --------------------------------------------------------------------------
+export const createAreaSchema = z.object({
+  name: z.string().trim().min(1, 'Nama area wajib diisi').max(80),
+  areaType: z.enum(AREA_TYPE),
+  /** Harga sewa ruangan per jam (Rp). Dasar perhitungan DP & pelunasan. */
+  pricePerHourIdr: z.coerce.number().int().min(0).nullish(),
+  imageUrl: z.string().trim().max(1000).nullish(),
+  imageStorageKey: z.string().trim().max(500).nullish(),
+  isActive: z.boolean().optional(),
+});
+
+export const updateAreaSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    areaType: z.enum(AREA_TYPE).optional(),
+    pricePerHourIdr: z.coerce.number().int().min(0).nullish(),
+    imageUrl: z.string().trim().max(1000).nullish(),
+    imageStorageKey: z.string().trim().max(500).nullish(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada perubahan yang dikirim',
+  });
+
+export const areaIdParamSchema = z.object({ areaId: uuidSchema });
+
+export const createTableSchema = z.object({
+  areaId: uuidSchema,
+  tableCode: z.string().trim().min(1, 'Kode meja wajib diisi').max(40),
+  capacity: z.coerce.number().int().min(1).max(100),
+  isActive: z.boolean().optional(),
+});
+
+export const updateTableSchema = z
+  .object({
+    tableCode: z.string().trim().min(1).max(40).optional(),
+    capacity: z.coerce.number().int().min(1).max(100).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada perubahan yang dikirim',
+  });
+
+export const tableIdParamSchema = z.object({ tableId: uuidSchema });
+
+export type CreateAreaInput = z.infer<typeof createAreaSchema>;
+export type UpdateAreaInput = z.infer<typeof updateAreaSchema>;
+export type CreateTableInput = z.infer<typeof createTableSchema>;
+export type UpdateTableInput = z.infer<typeof updateTableSchema>;
+
 export type SalesDashboardQuery = z.infer<typeof salesDashboardQuerySchema>;
+export type ListAdminOrderQuery = z.infer<typeof listAdminOrderQuerySchema>;
+export type RecordManualPaymentInput = z.infer<typeof recordManualPaymentSchema>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
 export type CreateRoleInput = z.infer<typeof createRoleSchema>;
 export type AssignRoleInput = z.infer<typeof assignRoleSchema>;
 export type ListAdminUserQuery = z.infer<typeof listAdminUserQuerySchema>;
+export type ListAdminReservationQuery = z.infer<typeof listAdminReservationQuerySchema>;
+export type UpdateReservationStatusInput = z.infer<typeof updateReservationStatusSchema>;
+export type UpdateDepositSettingsInput = z.infer<typeof updateDepositSettingsSchema>;
+export type CreateAdminReservationInput = z.infer<typeof createAdminReservationSchema>;
+export type ListAdminEventBookingQuery = z.infer<typeof listAdminEventBookingQuerySchema>;
+export type UpdateEventBookingStatusInput = z.infer<typeof updateEventBookingStatusSchema>;
+export type CreateAdminEventBookingInput = z.infer<typeof createAdminEventBookingSchema>;
+export type ListAdminChatConversationQuery = z.infer<typeof listAdminChatConversationQuerySchema>;
+export type ListAdminMomentQuery = z.infer<typeof listAdminMomentQuerySchema>;
+export type ModerateMomentInput = z.infer<typeof moderateMomentSchema>;
+export type ListDeletedProductQuery = z.infer<typeof listDeletedProductQuerySchema>;

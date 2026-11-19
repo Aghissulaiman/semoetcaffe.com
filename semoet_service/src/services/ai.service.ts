@@ -460,7 +460,7 @@ async function topProductLines(input: ContextInput): Promise<string[]> {
 
 async function lowStockLines(input: ContextInput): Promise<string[]> {
   const rows = await inventoryRepo.listIngredients(
-    { isActive: true, lowStockOnly: true, branchId: input.context.branchId },
+    { isActive: true, lowStockOnly: true },
     { limit: LOW_STOCK_LIMIT, offset: 0 },
   );
   if (rows.length === 0) return ['Tidak ada bahan yang berada di bawah reorder level.'];
