@@ -17,7 +17,7 @@ import {
 import type { CartItem, Order, Product } from "./types";
 
 export type PrintStation = "cashier" | "kitchen" | "bar";
-export type PrinterMode = "browser" | "serial";
+export type PrinterMode = "browser" | "serial" | "bluetooth";
 export type PaperWidth = 58 | 80;
 
 export interface PrinterSettings {
@@ -38,6 +38,13 @@ export interface SerialConnectionInfo {
   supported: boolean;
   connected: boolean;
   portInfo: SerialPortInfo | null;
+}
+
+export interface BluetoothConnectionInfo {
+  supported: boolean;
+  connected: boolean;
+  deviceName: string | null;
+  canReconnect: boolean;
 }
 
 const SETTINGS_KEY = "semoet.kasir.printerSettings";
@@ -71,7 +78,10 @@ function normalizeSettings(
   if (!value) return fallback;
 
   return {
-    mode: value.mode === "serial" ? "serial" : "browser",
+    mode:
+      value.mode === "serial" || value.mode === "bluetooth"
+        ? value.mode
+        : "browser",
     baudRate:
       typeof value.baudRate === "number" && Number.isFinite(value.baudRate)
         ? value.baudRate
@@ -156,9 +166,11 @@ function attachPort(port: SerialPortLike): void {
       activePort = null;
       activePortInfo = null;
       activeDisconnectHandler = null;
+      notifyPrinterChanged();
     }
   };
   port.addEventListener?.("disconnect", activeDisconnectHandler);
+  notifyPrinterChanged();
 }
 
 export function getSerialConnectionInfo(): SerialConnectionInfo {
@@ -253,12 +265,16 @@ export async function disconnectSerialPrinter(): Promise<void> {
   }
   activeDisconnectHandler = null;
 
-  if (!port) return;
+  if (!port) {
+    notifyPrinterChanged();
+    return;
+  }
   try {
     await port.close();
   } catch {
     // Printer mungkin sudah terputus secara fisik.
   }
+  notifyPrinterChanged();
 }
 
 async function ensureSerialReady(baudRate: number): Promise<SerialPortLike> {
@@ -304,6 +320,499 @@ async function writeSerialBytes(
 }
 
 // ---------------------------------------------------------------------------
+// Web Bluetooth (ESC/POS BLE)
+// ---------------------------------------------------------------------------
+
+interface BluetoothCharacteristicLike {
+  uuid: string;
+  properties?: {
+    write?: boolean;
+    writeWithoutResponse?: boolean;
+  };
+  writeValue?(value: Uint8Array): Promise<void>;
+  writeValueWithoutResponse?(value: Uint8Array): Promise<void>;
+}
+
+interface BluetoothServiceLike {
+  uuid: string;
+  getCharacteristic?(uuid: string): Promise<BluetoothCharacteristicLike>;
+  getCharacteristics(): Promise<BluetoothCharacteristicLike[]>;
+}
+
+interface BluetoothServerLike {
+  connected: boolean;
+  connect(): Promise<BluetoothServerLike>;
+  disconnect(): void;
+  getPrimaryService?(uuid: string): Promise<BluetoothServiceLike>;
+  getPrimaryServices(): Promise<BluetoothServiceLike[]>;
+}
+
+interface BluetoothDeviceLike {
+  id: string;
+  name?: string | null;
+  gatt?: BluetoothServerLike;
+  addEventListener?(
+    type: "gattserverdisconnected",
+    listener: () => void,
+  ): void;
+  removeEventListener?(
+    type: "gattserverdisconnected",
+    listener: () => void,
+  ): void;
+}
+
+interface BluetoothApiLike {
+  requestDevice(options?: {
+    acceptAllDevices?: boolean;
+    filters?: { services?: string[]; namePrefix?: string }[];
+    optionalServices?: string[];
+  }): Promise<BluetoothDeviceLike>;
+  getDevices?(): Promise<BluetoothDeviceLike[]>;
+}
+
+/**
+ * UUID yang umum dipakai printer thermal BLE. Web Bluetooth hanya bisa
+ * mengakses BLE, bukan Bluetooth Classic/SPP. Kalau printer hanya SPP,
+ * gunakan kabel USB atau mode dialog browser.
+ */
+const BLUETOOTH_PRINTER_PROFILES: {
+  service: string;
+  characteristic: string;
+}[] = [
+  {
+    service: "000018f0-0000-1000-8000-00805f9b34fb",
+    characteristic: "00002af1-0000-1000-8000-00805f9b34fb",
+  },
+  {
+    service: "0000ff00-0000-1000-8000-00805f9b34fb",
+    characteristic: "0000ff02-0000-1000-8000-00805f9b34fb",
+  },
+  {
+    service: "0000ffe0-0000-1000-8000-00805f9b34fb",
+    characteristic: "0000ffe1-0000-1000-8000-00805f9b34fb",
+  },
+  {
+    service: "0000fff0-0000-1000-8000-00805f9b34fb",
+    characteristic: "0000fff2-0000-1000-8000-00805f9b34fb",
+  },
+  {
+    service: "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+    characteristic: "49535343-8841-43f4-a8d4-ecbe34729bb3",
+  },
+  {
+    service: "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+    characteristic: "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f",
+  },
+];
+
+const BLUETOOTH_OPTIONAL_SERVICES = [
+  ...new Set(BLUETOOTH_PRINTER_PROFILES.map((profile) => profile.service)),
+];
+
+const NON_PRINTER_SERVICES = new Set([
+  "00001800-0000-1000-8000-00805f9b34fb",
+  "00001801-0000-1000-8000-00805f9b34fb",
+  "0000180a-0000-1000-8000-00805f9b34fb",
+  "0000180f-0000-1000-8000-00805f9b34fb",
+  "00001812-0000-1000-8000-00805f9b34fb",
+]);
+
+const BLUETOOTH_DEVICE_KEY = "semoet.kasir.bluetoothDeviceId";
+
+function getBluetoothApi(): BluetoothApiLike | null {
+  if (typeof navigator === "undefined") return null;
+  return (
+    (navigator as Navigator & { bluetooth?: BluetoothApiLike }).bluetooth ??
+    null
+  );
+}
+
+export function isBluetoothSupported(): boolean {
+  return getBluetoothApi() !== null;
+}
+
+export function canReconnectBluetooth(): boolean {
+  const api = getBluetoothApi();
+  return Boolean(api && typeof api.getDevices === "function");
+}
+
+let activeBluetoothDevice: BluetoothDeviceLike | null = null;
+let activeBluetoothCharacteristic: BluetoothCharacteristicLike | null = null;
+let activeBluetoothName: string | null = null;
+let bluetoothDisconnectHandler: (() => void) | null = null;
+
+function notifyPrinterChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event("semoet:printer-changed"));
+}
+
+function loadLastBluetoothDeviceId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(BLUETOOTH_DEVICE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastBluetoothDeviceId(deviceId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(BLUETOOTH_DEVICE_KEY, deviceId);
+  } catch {
+    // localStorage bisa diblokir; koneksi tetap berjalan di sesi ini.
+  }
+}
+
+function isWritableCharacteristic(
+  characteristic: BluetoothCharacteristicLike,
+): boolean {
+  return (
+    typeof characteristic.writeValueWithoutResponse === "function" ||
+    typeof characteristic.writeValue === "function"
+  );
+}
+
+function attachBluetoothDevice(
+  device: BluetoothDeviceLike,
+  characteristic: BluetoothCharacteristicLike,
+): void {
+  if (
+    activeBluetoothDevice &&
+    activeBluetoothDevice !== device &&
+    bluetoothDisconnectHandler
+  ) {
+    activeBluetoothDevice.removeEventListener?.(
+      "gattserverdisconnected",
+      bluetoothDisconnectHandler,
+    );
+  }
+
+  activeBluetoothDevice = device;
+  activeBluetoothCharacteristic = characteristic;
+  activeBluetoothName = device.name?.trim() || "Printer Bluetooth";
+
+  bluetoothDisconnectHandler = () => {
+    if (activeBluetoothDevice !== device) return;
+    activeBluetoothDevice = null;
+    activeBluetoothCharacteristic = null;
+    activeBluetoothName = null;
+    bluetoothDisconnectHandler = null;
+    notifyPrinterChanged();
+  };
+
+  device.addEventListener?.(
+    "gattserverdisconnected",
+    bluetoothDisconnectHandler,
+  );
+}
+
+export function getBluetoothConnectionInfo(): BluetoothConnectionInfo {
+  return {
+    supported: isBluetoothSupported(),
+    connected: Boolean(
+      activeBluetoothDevice?.gatt?.connected &&
+        activeBluetoothCharacteristic,
+    ),
+    deviceName: activeBluetoothName,
+    canReconnect: canReconnectBluetooth(),
+  };
+}
+
+async function findBluetoothCharacteristic(
+  device: BluetoothDeviceLike,
+): Promise<BluetoothCharacteristicLike> {
+  const server = device.gatt;
+  if (!server) {
+    throw new Error(
+      "Perangkat Bluetooth ini tidak menyediakan layanan GATT untuk mencetak.",
+    );
+  }
+
+  if (!server.connected) {
+    try {
+      await server.connect();
+    } catch (error) {
+      throw new Error(
+        error instanceof Error
+          ? `Gagal menyambungkan Bluetooth: ${error.message}`
+          : "Gagal menyambungkan printer Bluetooth.",
+      );
+    }
+  }
+
+  // Coba profil printer yang paling umum lebih dulu.
+  for (const profile of BLUETOOTH_PRINTER_PROFILES) {
+    try {
+      const service = server.getPrimaryService
+        ? await server.getPrimaryService(profile.service)
+        : undefined;
+      if (!service) continue;
+
+      let characteristic: BluetoothCharacteristicLike | undefined;
+      if (service.getCharacteristic) {
+        try {
+          characteristic = await service.getCharacteristic(
+            profile.characteristic,
+          );
+        } catch {
+          // Karakteristik tidak ada di layanan ini; coba daftar karakteristik.
+        }
+      }
+      if (!characteristic) {
+        const characteristics = await service.getCharacteristics();
+        characteristic = characteristics.find(
+          (item) =>
+            item.uuid.toLowerCase() ===
+            profile.characteristic.toLowerCase(),
+        );
+      }
+
+      if (characteristic && isWritableCharacteristic(characteristic)) {
+        return characteristic;
+      }
+    } catch {
+      // Layanan tidak tersedia di perangkat ini; lanjut ke profil berikutnya.
+    }
+  }
+
+  // Fallback: pakai karakteristik writable pertama yang bisa diakses.
+  try {
+    const services = await server.getPrimaryServices();
+    for (const service of services) {
+      if (NON_PRINTER_SERVICES.has(service.uuid.toLowerCase())) continue;
+      try {
+        const characteristics = await service.getCharacteristics();
+        const writable = characteristics.find(isWritableCharacteristic);
+        if (writable) return writable;
+      } catch {
+        // Layanan ini tidak memberi izin akses; lanjut.
+      }
+    }
+  } catch {
+    // Sebagian perangkat tidak mengizinkan enumerasi semua layanan.
+  }
+
+  throw new Error(
+    "Printer Bluetooth terhubung, tetapi kanal tulis ESC/POS tidak ditemukan. Pastikan printer mendukung BLE, atau gunakan kabel USB.",
+  );
+}
+
+async function openBluetoothDevice(
+  device: BluetoothDeviceLike,
+): Promise<void> {
+  try {
+    const characteristic = await findBluetoothCharacteristic(device);
+    attachBluetoothDevice(device, characteristic);
+  } catch (error) {
+    try {
+      if (device.gatt?.connected) device.gatt.disconnect();
+    } catch {
+      // Koneksi mungkin sudah tertutup.
+    }
+    throw error;
+  }
+}
+
+export async function connectBluetoothPrinter(): Promise<BluetoothConnectionInfo> {
+  const api = getBluetoothApi();
+  if (!api) {
+    throw new Error(
+      "Browser ini tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge versi desktop melalui localhost atau HTTPS.",
+    );
+  }
+
+  if (
+    activeBluetoothCharacteristic &&
+    activeBluetoothDevice?.gatt?.connected
+  ) {
+    return getBluetoothConnectionInfo();
+  }
+
+  let device: BluetoothDeviceLike;
+  try {
+    device = await api.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: BLUETOOTH_OPTIONAL_SERVICES,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") {
+      throw new Error(
+        "Tidak ada printer Bluetooth yang dipilih. Pastikan printer menyala dan dalam mode pairing.",
+      );
+    }
+    if (error instanceof DOMException && error.name === "SecurityError") {
+      throw new Error(
+        "Bluetooth hanya bisa diakses lewat localhost atau HTTPS di Chrome/Edge desktop.",
+      );
+    }
+    throw new Error(
+      error instanceof Error
+        ? `Gagal memilih printer Bluetooth: ${error.message}`
+        : "Gagal memilih printer Bluetooth.",
+    );
+  }
+
+  await openBluetoothDevice(device);
+  saveLastBluetoothDeviceId(device.id);
+  notifyPrinterChanged();
+  return getBluetoothConnectionInfo();
+}
+
+export async function reconnectBluetoothPrinter(): Promise<BluetoothConnectionInfo> {
+  if (
+    activeBluetoothCharacteristic &&
+    activeBluetoothDevice?.gatt?.connected
+  ) {
+    return getBluetoothConnectionInfo();
+  }
+
+  const api = getBluetoothApi();
+  if (!api) {
+    throw new Error(
+      "Browser ini tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge versi desktop melalui localhost atau HTTPS.",
+    );
+  }
+  if (typeof api.getDevices !== "function") {
+    throw new Error(
+      "Browser ini belum mendukung sambung ulang otomatis. Klik Hubungkan Bluetooth untuk memilih printer.",
+    );
+  }
+
+  let devices: BluetoothDeviceLike[] = [];
+  try {
+    devices = await api.getDevices();
+  } catch {
+    throw new Error(
+      "Izin Bluetooth tidak tersedia. Klik Hubungkan Bluetooth untuk memilih printer.",
+    );
+  }
+
+  if (devices.length === 0) {
+    throw new Error(
+      "Belum ada printer Bluetooth yang diizinkan. Buka halaman Printer lalu klik Hubungkan Bluetooth.",
+    );
+  }
+
+  const lastDeviceId = loadLastBluetoothDeviceId();
+  const device =
+    devices.find((item) => item.id === lastDeviceId) ?? devices[0];
+
+  await openBluetoothDevice(device);
+  saveLastBluetoothDeviceId(device.id);
+  notifyPrinterChanged();
+  return getBluetoothConnectionInfo();
+}
+
+export async function disconnectBluetoothPrinter(): Promise<void> {
+  const device = activeBluetoothDevice;
+  if (device && bluetoothDisconnectHandler) {
+    device.removeEventListener?.(
+      "gattserverdisconnected",
+      bluetoothDisconnectHandler,
+    );
+  }
+
+  activeBluetoothDevice = null;
+  activeBluetoothCharacteristic = null;
+  activeBluetoothName = null;
+  bluetoothDisconnectHandler = null;
+  notifyPrinterChanged();
+
+  try {
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  } catch {
+    // Perangkat mungkin sudah terputus secara fisik.
+  }
+}
+
+async function ensureBluetoothReady(): Promise<BluetoothCharacteristicLike> {
+  if (
+    activeBluetoothCharacteristic &&
+    activeBluetoothDevice?.gatt?.connected
+  ) {
+    return activeBluetoothCharacteristic;
+  }
+
+  activeBluetoothCharacteristic = null;
+  await reconnectBluetoothPrinter();
+
+  if (!activeBluetoothCharacteristic) {
+    throw new Error(
+      "Printer Bluetooth belum terhubung. Buka halaman Printer untuk menghubungkan.",
+    );
+  }
+  return activeBluetoothCharacteristic;
+}
+
+let bluetoothQueue: Promise<void> = Promise.resolve();
+
+function enqueueBluetooth(task: () => Promise<void>): Promise<void> {
+  const next = bluetoothQueue.then(task, task);
+  bluetoothQueue = next.catch(() => undefined);
+  return next;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function writeBluetoothChunk(
+  characteristic: BluetoothCharacteristicLike,
+  chunk: Uint8Array,
+): Promise<void> {
+  const properties = characteristic.properties;
+
+  // Kalau browser memberi tahu bahwa write-without-response tidak didukung,
+  // langsung pakai write-with-response.
+  if (
+    properties?.writeWithoutResponse === false &&
+    properties.write !== false &&
+    characteristic.writeValue
+  ) {
+    await characteristic.writeValue(chunk);
+    return;
+  }
+
+  if (characteristic.writeValueWithoutResponse) {
+    try {
+      await characteristic.writeValueWithoutResponse(chunk);
+      return;
+    } catch (error) {
+      if (!characteristic.writeValue) throw error;
+      // Sebagian printer menolak write-without-response; coba dengan respons.
+    }
+  }
+
+  if (characteristic.writeValue) {
+    await characteristic.writeValue(chunk);
+    return;
+  }
+
+  throw new Error(
+    "Printer Bluetooth tidak punya kanal tulis. Gunakan kabel USB.",
+  );
+}
+
+async function writeBluetoothBytes(bytes: Uint8Array): Promise<void> {
+  return enqueueBluetooth(async () => {
+    const characteristic = await ensureBluetoothReady();
+    // 20 byte adalah ukuran aman sebelum MTU dinegosiasikan. Jeda kecil
+    // mencegah buffer printer BLE penuh saat struk panjang.
+    const chunkSize = 20;
+
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.slice(offset, offset + chunkSize);
+      await writeBluetoothChunk(characteristic, chunk);
+
+      if (offset + chunkSize < bytes.length) await delay(15);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // ESC/POS
 // ---------------------------------------------------------------------------
 
@@ -327,7 +836,8 @@ function transliterate(value: string): string {
     .replaceAll("“", '"')
     .replaceAll("”", '"')
     .replaceAll("×", "x")
-    .replaceAll("·", ".");
+    .replaceAll("·", ".")
+    .replaceAll("\u00a0", " ");
 }
 
 class EscPosBuilder {
@@ -688,6 +1198,12 @@ export interface AutoPrintResult {
   skipped: PrintStation[];
 }
 
+const STATION_LABEL: Record<PrintStation, string> = {
+  cashier: "Kasir",
+  kitchen: "Dapur",
+  bar: "Bar",
+};
+
 export async function printOrderStation(
   order: Order,
   station: PrintStation,
@@ -696,7 +1212,7 @@ export async function printOrderStation(
 ): Promise<void> {
   if (station !== "cashier" && items.length === 0) return;
 
-  if (settings.mode === "serial") {
+  if (settings.mode === "serial" || settings.mode === "bluetooth") {
     const bytes =
       station === "cashier"
         ? buildEscPosReceipt(order, settings.paperWidth)
@@ -706,14 +1222,24 @@ export async function printOrderStation(
             items,
             settings.paperWidth,
           );
-    await writeSerialBytes(bytes, settings.baudRate);
+
+    if (settings.mode === "serial") {
+      await writeSerialBytes(bytes, settings.baudRate);
+    } else {
+      await writeBluetoothBytes(bytes);
+    }
     return;
   }
 
   const html =
     station === "cashier"
-      ? buildReceiptHtml(order)
-      : buildStationTicketHtml(order, station, items);
+      ? buildReceiptHtml(order, settings.paperWidth)
+      : buildStationTicketHtml(
+          order,
+          station,
+          items,
+          settings.paperWidth,
+        );
   await printHtmlDocument(html);
 }
 
@@ -729,6 +1255,7 @@ export async function autoPrintAcceptedOrder(
   const groups = groupItemsByStation(order.items, products, settings);
   const printed: PrintStation[] = [];
   const skipped: PrintStation[] = [];
+  const errors: string[] = [];
 
   const jobs: { station: PrintStation; items: CartItem[] }[] = [];
   if (settings.autoPrint.kitchen) {
@@ -750,8 +1277,20 @@ export async function autoPrintAcceptedOrder(
   }
 
   for (const job of jobs) {
-    await printOrderStation(order, job.station, job.items, settings);
-    printed.push(job.station);
+    try {
+      await printOrderStation(order, job.station, job.items, settings);
+      printed.push(job.station);
+    } catch (err) {
+      errors.push(
+        `${STATION_LABEL[job.station]}: ${
+          err instanceof Error ? err.message : "gagal mencetak"
+        }`,
+      );
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Cetak otomatis gagal — ${errors.join("; ")}`);
   }
 
   return { printed, skipped };

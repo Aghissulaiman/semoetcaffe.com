@@ -144,10 +144,14 @@ const TICKET_STYLE = `
     }`;
 
 /** HTML struk pelanggan/kasir (tanpa script cetak). */
-export function buildReceiptHtml(order: Order): string {
+export function buildReceiptHtml(
+  order: Order,
+  paperWidth: 58 | 80 = 80,
+): string {
   const paymentLine = order.paymentMethod
     ? PAYMENT_METHOD_LABEL[order.paymentMethod]
     : "Belum dibayar";
+  const pageWidth = paperWidth === 58 ? "58mm" : "80mm";
 
   const paidRows =
     order.paymentStatus === "paid"
@@ -160,7 +164,9 @@ export function buildReceiptHtml(order: Order): string {
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(order.code)}</title>
-  <style>${PRINT_STYLE}</style>
+  <style>${PRINT_STYLE}
+    body { width: ${pageWidth}; }
+  </style>
 </head>
 <body>
   <div class="center">
@@ -208,9 +214,11 @@ export function buildStationTicketHtml(
   order: Order,
   station: TicketStation,
   items: CartItem[],
+  paperWidth: 58 | 80 = 80,
 ): string {
   const title = station === "bar" ? "TIKET BAR" : "TIKET DAPUR";
   const subtitle = station === "bar" ? "Minuman" : "Makanan";
+  const pageWidth = paperWidth === 58 ? "58mm" : "80mm";
   const orderNote = order.note
     ? `<div class="line"></div><div class="note">CATATAN PESANAN: ${escapeHtml(order.note)}</div>`
     : "";
@@ -220,7 +228,9 @@ export function buildStationTicketHtml(
 <head>
   <meta charset="utf-8" />
   <title>${title} ${escapeHtml(order.code)}</title>
-  <style>${TICKET_STYLE}</style>
+  <style>${TICKET_STYLE}
+    body { width: ${pageWidth}; }
+  </style>
 </head>
 <body>
   <div class="center">

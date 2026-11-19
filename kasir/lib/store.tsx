@@ -896,7 +896,7 @@ export function KasirProvider({ children }: { children: ReactNode }) {
           setError(
             apiErrorFrom(
               err,
-              "Pesanan diterima, tetapi cetak otomatis gagal. Buka halaman Printer untuk memeriksa koneksi.",
+              "Pesanan diterima, tetapi cetak otomatis gagal. Buka menu Printer untuk menghubungkan printer lewat USB atau Bluetooth.",
             ),
           );
         });

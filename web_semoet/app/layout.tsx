@@ -24,6 +24,11 @@ export const metadata: Metadata = {
   description:
     "Pesan kopi, makanan, dan paket favoritmu di Semoet Cafe. Kumpulkan poin, pakai voucher, dan reservasi meja atau event langsung dari web.",
   applicationName: "Semoet Cafe",
+  appleWebApp: {
+    capable: true,
+    title: "Semoet Cafe",
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {

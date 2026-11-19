@@ -1,6 +1,7 @@
 "use client";
 
 import { Banknote, ChefHat, Coffee, Printer } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 
 import { Badge, Button, Modal } from "@/components/ui";
@@ -140,7 +141,15 @@ export function ReceiptModal({ order, onClose, onPay }: ReceiptModalProps) {
               </Button>
             </div>
             <p className="text-center text-[10px] text-muted">
-              Koneksi & pembagian tiket diatur di menu Printer.
+              Tiket tercetak otomatis saat pesanan diterima. Tombol di atas
+              untuk cetak ulang; koneksi diatur di{" "}
+              <Link
+                href="/printer"
+                className="font-bold text-primary underline-offset-2 hover:underline"
+              >
+                menu Printer
+              </Link>
+              .
             </p>
             {canPay && onPay ? (
               <Button

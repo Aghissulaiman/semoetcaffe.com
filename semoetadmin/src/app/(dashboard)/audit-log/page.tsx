@@ -1,4 +1,4 @@
-"use client";
+ "use client";
 
 import AuditLogTable from "@/components/audit/AuditLogTable";
 import AppModal from "@/components/common/AppModal";

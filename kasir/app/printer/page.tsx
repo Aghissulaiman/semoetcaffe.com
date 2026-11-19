@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Bluetooth,
   CheckCircle2,
   ChefHat,
   Coffee,
@@ -27,18 +28,25 @@ import {
 import { cn } from "@/lib/cn";
 import { formatRupiah } from "@/lib/format";
 import {
+  autoPrintAcceptedOrder,
   BAUD_RATES,
+  connectBluetoothPrinter,
   connectSerialPrinter,
   defaultPrinterSettings,
+  disconnectBluetoothPrinter,
   disconnectSerialPrinter,
+  getBluetoothConnectionInfo,
   getSerialConnectionInfo,
   groupItemsByStation,
   inferStation,
+  isBluetoothSupported,
   isSerialSupported,
   loadPrinterSettings,
   printOrderStation,
+  reconnectBluetoothPrinter,
   reconnectSerialPrinter,
   savePrinterSettings,
+  type BluetoothConnectionInfo,
   type PaperWidth,
   type PrintStation,
   type PrinterMode,
@@ -106,6 +114,13 @@ export default function PrinterPage() {
     connected: false,
     portInfo: null,
   });
+  const [bluetoothConnection, setBluetoothConnection] =
+    useState<BluetoothConnectionInfo>({
+      supported: false,
+      connected: false,
+      deviceName: null,
+      canReconnect: false,
+    });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -119,11 +134,22 @@ export default function PrinterPage() {
       setSettings(stored);
       setLoaded(true);
       setConnection(getSerialConnectionInfo());
+      setBluetoothConnection(getBluetoothConnectionInfo());
 
       if (stored.mode === "serial" && isSerialSupported()) {
         void reconnectSerialPrinter(stored.baudRate)
           .then(() => {
             if (!cancelled) setConnection(getSerialConnectionInfo());
+          })
+          .catch(() => {
+            // Belum ada izin / printer mati. Status tetap "belum terhubung".
+          });
+      }
+
+      if (stored.mode === "bluetooth" && isBluetoothSupported()) {
+        void reconnectBluetoothPrinter()
+          .then(() => {
+            if (!cancelled) setBluetoothConnection(getBluetoothConnectionInfo());
           })
           .catch(() => {
             // Belum ada izin / printer mati. Status tetap "belum terhubung".
@@ -135,6 +161,17 @@ export default function PrinterPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
+  }, []);
+
+  // Status koneksi bisa berubah karena printer dicabut/dimatikan atau karena
+  // auto-print menyambung ulang perangkat. Samakan UI tanpa polling.
+  useEffect(() => {
+    const sync = () => {
+      setConnection(getSerialConnectionInfo());
+      setBluetoothConnection(getBluetoothConnectionInfo());
+    };
+    window.addEventListener("semoet:printer-changed", sync);
+    return () => window.removeEventListener("semoet:printer-changed", sync);
   }, []);
 
   const latestOrder = orders[0] ?? null;
@@ -182,18 +219,30 @@ export default function PrinterPage() {
     });
   }
 
+  function syncConnections() {
+    setConnection(getSerialConnectionInfo());
+    setBluetoothConnection(getBluetoothConnectionInfo());
+  }
+
   async function handleConnect() {
     if (busy) return;
     setBusy("connect");
     setError(null);
     setNotice(null);
     try {
-      await connectSerialPrinter(settings.baudRate);
-      setConnection(getSerialConnectionInfo());
-      setNotice("Printer berhasil terhubung. Coba tes cetak di bawah.");
+      if (settings.mode === "bluetooth") {
+        await connectBluetoothPrinter();
+        setNotice(
+          "Printer Bluetooth berhasil terhubung. Coba tes cetak di bawah.",
+        );
+      } else {
+        await connectSerialPrinter(settings.baudRate);
+        setNotice("Printer USB berhasil terhubung. Coba tes cetak di bawah.");
+      }
+      syncConnections();
     } catch (err) {
       setError(errorMessage(err, "Gagal menghubungkan printer."));
-      setConnection(getSerialConnectionInfo());
+      syncConnections();
     } finally {
       setBusy(null);
     }
@@ -205,12 +254,16 @@ export default function PrinterPage() {
     setError(null);
     setNotice(null);
     try {
-      await reconnectSerialPrinter(settings.baudRate);
-      setConnection(getSerialConnectionInfo());
+      if (settings.mode === "bluetooth") {
+        await reconnectBluetoothPrinter();
+      } else {
+        await reconnectSerialPrinter(settings.baudRate);
+      }
+      syncConnections();
       setNotice("Printer tersambung kembali.");
     } catch (err) {
       setError(errorMessage(err, "Gagal menyambungkan ulang printer."));
-      setConnection(getSerialConnectionInfo());
+      syncConnections();
     } finally {
       setBusy(null);
     }
@@ -222,8 +275,12 @@ export default function PrinterPage() {
     setError(null);
     setNotice(null);
     try {
-      await disconnectSerialPrinter();
-      setConnection(getSerialConnectionInfo());
+      if (settings.mode === "bluetooth") {
+        await disconnectBluetoothPrinter();
+      } else {
+        await disconnectSerialPrinter();
+      }
+      syncConnections();
       setNotice("Koneksi printer diputuskan.");
     } finally {
       setBusy(null);
@@ -255,13 +312,37 @@ export default function PrinterPage() {
 
       await printOrderStation(latestOrder, station, items, settings);
       setNotice(
-        settings.mode === "serial"
+        settings.mode !== "browser"
           ? `Tes tiket ${STATION_LABEL[station]} terkirim ke printer.`
           : `Dialog cetak tiket ${STATION_LABEL[station]} dibuka. Pilih printer lalu cetak.`,
       );
     } catch (err) {
       setError(errorMessage(err, "Tes cetak gagal."));
-      setConnection(getSerialConnectionInfo());
+      syncConnections();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleTestAll() {
+    if (busy || !latestOrder) return;
+    setBusy("test-all");
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await autoPrintAcceptedOrder(latestOrder, products);
+      const printed = result.printed.map(
+        (station) => STATION_LABEL[station],
+      );
+      setNotice(
+        printed.length > 0
+          ? `Cetak otomatis terkirim: ${printed.join(", ")}.`
+          : "Tidak ada tiket yang dicetak. Periksa pengaturan Cetak otomatis.",
+      );
+    } catch (err) {
+      setError(errorMessage(err, "Tes cetak otomatis gagal."));
+      syncConnections();
     } finally {
       setBusy(null);
     }
@@ -270,20 +351,38 @@ export default function PrinterPage() {
   if (!hydrated || !loaded) return <PageLoader label="Memuat pengaturan printer…" />;
 
   const serialSupported = connection.supported;
-  const connected = connection.connected;
+  const bluetoothSupported = bluetoothConnection.supported;
+  const connected =
+    settings.mode === "serial"
+      ? connection.connected
+      : settings.mode === "bluetooth"
+        ? bluetoothConnection.connected
+        : false;
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Printer"
-        description="Hubungkan printer struk dan atur tiket otomatis untuk kasir, dapur, dan bar."
+        description="Hubungkan printer struk lewat kabel USB atau Bluetooth, lalu atur tiket otomatis untuk kasir, dapur, dan bar."
         actions={
-          <Badge tone={connected ? "success" : "default"}>
-            {settings.mode === "serial"
-              ? connected
-                ? "Serial terhubung"
-                : "Serial belum terhubung"
-              : "Mode dialog browser"}
+          <Badge
+            tone={
+              settings.mode === "browser"
+                ? "warning"
+                : connected
+                  ? "success"
+                  : "default"
+            }
+          >
+            {settings.mode === "browser"
+              ? "Mode dialog manual"
+              : settings.mode === "serial"
+                ? connected
+                  ? "USB terhubung"
+                  : "USB belum terhubung"
+                : connected
+                  ? "Bluetooth terhubung"
+                  : "Bluetooth belum terhubung"}
           </Badge>
         }
       />
@@ -300,7 +399,10 @@ export default function PrinterPage() {
       ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <section className="rounded-2xl border border-line bg-surface p-4">
+        <section
+          id="koneksi-printer"
+          className="rounded-2xl border border-line bg-surface p-4"
+        >
           <div className="flex items-start gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-soft text-primary">
               <Printer size={19} />
@@ -308,9 +410,8 @@ export default function PrinterPage() {
             <div className="min-w-0">
               <h2 className="text-sm font-black text-ink">Koneksi printer</h2>
               <p className="mt-0.5 text-xs leading-relaxed text-muted">
-                Untuk cetak otomatis tanpa dialog, gunakan printer thermal
-                ESC/POS yang terhubung lewat USB serial di Chrome atau Edge
-                desktop.
+                Pilih kabel USB atau Bluetooth. Dua mode ini mengirim ESC/POS
+                langsung ke printer sehingga struk keluar otomatis tanpa dialog.
               </p>
             </div>
           </div>
@@ -325,29 +426,81 @@ export default function PrinterPage() {
               }}
               options={[
                 {
+                  value: "serial",
+                  label: "USB kabel",
+                  icon: <Usb size={14} />,
+                },
+                {
+                  value: "bluetooth",
+                  label: "Bluetooth",
+                  icon: <Bluetooth size={14} />,
+                },
+                {
                   value: "browser",
                   label: "Dialog browser",
                   icon: <Printer size={14} />,
-                },
-                {
-                  value: "serial",
-                  label: "USB serial",
-                  icon: <Usb size={14} />,
                 },
               ]}
             />
           </div>
 
+          <div
+            className={cn(
+              "mt-4 grid gap-3",
+              settings.mode === "serial" ? "sm:grid-cols-2" : "sm:max-w-xs",
+            )}
+          >
+            {settings.mode === "serial" ? (
+              <Field label="Baud rate" hint="Umumnya 9600 untuk printer struk">
+                <Select
+                  value={settings.baudRate}
+                  onChange={(event) => {
+                    persist({
+                      ...settings,
+                      baudRate: Number(event.target.value),
+                    });
+                    if (connected) {
+                      setNotice(
+                        "Baud rate disimpan. Putuskan lalu hubungkan ulang printer agar berlaku.",
+                      );
+                    }
+                  }}
+                >
+                  {BAUD_RATES.map((rate) => (
+                    <option key={rate} value={rate}>
+                      {rate}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : null}
+            <Field label="Lebar kertas">
+              <Select
+                value={settings.paperWidth}
+                onChange={(event) =>
+                  persist({
+                    ...settings,
+                    paperWidth: Number(event.target.value) as PaperWidth,
+                  })
+                }
+              >
+                <option value={58}>58 mm</option>
+                <option value={80}>80 mm</option>
+              </Select>
+            </Field>
+          </div>
+
           {settings.mode === "browser" ? (
             <div className="mt-4 rounded-xl border border-line bg-milk p-3 text-xs leading-relaxed text-ink-soft">
-              <p className="font-bold text-ink">Cara kerja mode dialog</p>
+              <p className="font-bold text-ink">Mode dialog browser</p>
               <p className="mt-1">
-                Setiap tiket membuka dialog cetak browser. Pilih printer yang
-                ingin dipakai. Cara ini bekerja dengan printer apa pun yang
-                sudah terpasang di komputer, tetapi tidak sepenuhnya otomatis.
+                Setiap tiket membuka dialog cetak browser, jadi masih perlu
+                memilih printer dan menekan cetak. Untuk cetak otomatis tanpa
+                klik, pilih <strong>USB kabel</strong> atau{" "}
+                <strong>Bluetooth</strong>.
               </p>
             </div>
-          ) : (
+          ) : settings.mode === "serial" ? (
             <div className="mt-4 flex flex-col gap-3">
               {!serialSupported ? (
                 <div className="flex gap-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-xs leading-relaxed text-ink">
@@ -363,63 +516,24 @@ export default function PrinterPage() {
                 </div>
               ) : null}
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Baud rate" hint="Umumnya 9600 untuk printer struk">
-                  <Select
-                    value={settings.baudRate}
-                    onChange={(event) => {
-                      persist({
-                        ...settings,
-                        baudRate: Number(event.target.value),
-                      });
-                      if (connected) {
-                        setNotice(
-                          "Baud rate disimpan. Putuskan lalu hubungkan ulang printer agar berlaku.",
-                        );
-                      }
-                    }}
-                  >
-                    {BAUD_RATES.map((rate) => (
-                      <option key={rate} value={rate}>
-                        {rate}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Lebar kertas">
-                  <Select
-                    value={settings.paperWidth}
-                    onChange={(event) =>
-                      persist({
-                        ...settings,
-                        paperWidth: Number(event.target.value) as PaperWidth,
-                      })
-                    }
-                  >
-                    <option value={58}>58 mm</option>
-                    <option value={80}>80 mm</option>
-                  </Select>
-                </Field>
-              </div>
-
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-milk px-3 py-2.5">
                 <span
                   className={cn(
                     "flex h-2.5 w-2.5 rounded-full",
-                    connected ? "bg-success" : "bg-muted/40",
+                    connection.connected ? "bg-success" : "bg-muted/40",
                   )}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-black text-ink">
-                    {connected ? "Terhubung" : "Belum terhubung"}
+                    {connection.connected ? "Terhubung" : "Belum terhubung"}
                   </p>
                   <p className="truncate text-[11px] text-muted">
-                    {connected
+                    {connection.connected
                       ? portLabel(connection.portInfo)
                       : "Klik Hubungkan printer untuk memilih perangkat USB."}
                   </p>
                 </div>
-                {connected ? (
+                {connection.connected ? (
                   <Button
                     variant="outline"
                     size="sm"
@@ -468,7 +582,110 @@ export default function PrinterPage() {
               <p className="text-[11px] leading-relaxed text-muted">
                 Satu printer yang terhubung menerima semua tiket. Isi tiket
                 kasir, dapur, dan bar tetap dipisah sesuai pengaturan di bawah.
+                Jika printer USB tidak muncul di daftar Web Serial, printer
+                mungkin memakai USB printer class; gunakan mode dialog browser.
               </p>
+            </div>
+          ) : (
+            <div className="mt-4 flex flex-col gap-3">
+              {!bluetoothSupported ? (
+                <div className="flex gap-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-xs leading-relaxed text-ink">
+                  <AlertTriangle
+                    size={16}
+                    className="mt-0.5 shrink-0 text-warning"
+                  />
+                  <p>
+                    Browser ini tidak mendukung Web Bluetooth. Gunakan
+                    Chrome/Edge desktop melalui <strong>localhost</strong> atau
+                    HTTPS. Web Bluetooth hanya bisa printer <strong>BLE</strong>,
+                    bukan Bluetooth Classic/SPP.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-milk px-3 py-2.5">
+                <span
+                  className={cn(
+                    "flex h-2.5 w-2.5 rounded-full",
+                    bluetoothConnection.connected
+                      ? "bg-success"
+                      : "bg-muted/40",
+                  )}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-black text-ink">
+                    {bluetoothConnection.connected
+                      ? "Terhubung"
+                      : "Belum terhubung"}
+                  </p>
+                  <p className="truncate text-[11px] text-muted">
+                    {bluetoothConnection.connected
+                      ? (bluetoothConnection.deviceName ??
+                        "Printer Bluetooth BLE")
+                      : "Nyalakan printer, lalu klik Hubungkan Bluetooth."}
+                  </p>
+                </div>
+                {bluetoothConnection.connected ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={Boolean(busy)}
+                    onClick={() => void handleDisconnect()}
+                  >
+                    {busy === "disconnect" ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Power size={14} />
+                    )}
+                    Putuskan
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      disabled={Boolean(busy) || !bluetoothSupported}
+                      onClick={() => void handleConnect()}
+                    >
+                      {busy === "connect" ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Bluetooth size={14} />
+                      )}
+                      Hubungkan
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={
+                        Boolean(busy) ||
+                        !bluetoothSupported ||
+                        !bluetoothConnection.canReconnect
+                      }
+                      onClick={() => void handleReconnect()}
+                      title="Sambungkan ulang printer Bluetooth yang izinnya sudah tersimpan"
+                    >
+                      {busy === "reconnect" ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={14} />
+                      )}
+                      Sambung ulang
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-line bg-milk p-3 text-[11px] leading-relaxed text-muted">
+                <p className="font-bold text-ink">Kalau printer tidak muncul</p>
+                <p className="mt-1">
+                  Pastikan printer menyala dan dalam mode pairing. Sebagian
+                  printer murah memakai Bluetooth Classic (SPP) yang tidak bisa
+                  diakses browser; untuk model itu gunakan kabel USB atau mode
+                  dialog browser. Kalau printer SPP sudah dipasangkan di
+                  komputer dan muncul sebagai port serial, pilih mode USB
+                  kabel.
+                </p>
+              </div>
             </div>
           )}
         </section>
@@ -486,6 +703,44 @@ export default function PrinterPage() {
               </p>
             </div>
           </div>
+
+          {settings.mode === "browser" ? (
+            <div className="mt-3 flex gap-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-[11px] leading-relaxed text-ink">
+              <AlertTriangle
+                size={14}
+                className="mt-0.5 shrink-0 text-warning"
+              />
+              <p>
+                Mode dialog browser belum sepenuhnya otomatis: setiap tiket
+                tetap membuka dialog cetak. Pilih USB kabel atau Bluetooth
+                untuk mencetak tanpa klik.
+              </p>
+            </div>
+          ) : !connected ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-warning/30 bg-warning-soft p-3 text-[11px] leading-relaxed text-ink">
+              <AlertTriangle size={14} className="shrink-0 text-warning" />
+              <p className="min-w-0 flex-1">
+                Printer belum terhubung. Cetak otomatis akan gagal sampai
+                koneksi dibuat.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  document
+                    .getElementById("koneksi-printer")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
+                Hubungkan
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-3 flex items-center gap-2 rounded-xl border border-success/20 bg-success-soft p-3 text-[11px] font-semibold leading-relaxed text-success">
+              <CheckCircle2 size={14} className="shrink-0" />
+              <p>Printer siap. Tiket akan dikirim otomatis tanpa dialog.</p>
+            </div>
+          )}
 
           <div className="mt-4 flex flex-col gap-2">
             {(["cashier", "kitchen", "bar"] as PrintStation[]).map(
@@ -666,6 +921,28 @@ export default function PrinterPage() {
                   );
                 },
               )}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  Boolean(busy) ||
+                  settings.mode === "browser" ||
+                  !connected
+                }
+                onClick={() => void handleTestAll()}
+              >
+                {busy === "test-all" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Printer size={14} />
+                )}
+                Tes semua tiket (otomatis)
+              </Button>
+              <p className="text-[11px] text-muted">
+                Mengikuti pengaturan Cetak otomatis di atas.
+              </p>
             </div>
 
             {groups && groups.unassigned.length > 0 ? (
