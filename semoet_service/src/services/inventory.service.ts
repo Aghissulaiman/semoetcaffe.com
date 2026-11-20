@@ -74,6 +74,15 @@ function shapeIngredient(row: Record<string, unknown>) {
     baseUnit: str(row.baseUnit),
     reorderLevel: num(row.reorderLevel),
     isActive: bool(row.isActive, true),
+    supplierId: strOrNull(row.supplierId),
+    supplierName: strOrNull(row.supplierName),
+    supplierContact: strOrNull(row.supplierContact),
+    purchaseLink: strOrNull(row.purchaseLink),
+    lastPurchasePriceIdr: num(row.lastPurchasePriceIdr),
+    lastPurchaseQty: num(row.lastPurchaseQty),
+    lastPurchaseUom: strOrNull(row.lastPurchaseUom),
+    lastYieldAmount: num(row.lastYieldAmount),
+    lastUnitCostIdr: num(row.lastUnitCostIdr),
     onHand: row.onHand === undefined ? null : num(row.onHand),
     lastMovementAt: iso(row.lastMovementAt),
     createdAt: iso(row.createdAt),
@@ -317,6 +326,14 @@ export async function createIngredient(
         baseUnit: normalizeText(input.baseUnit),
         reorderLevel: num(input.reorderLevel),
         isActive: bool(input.isActive, true),
+        supplierId: input.supplierId ?? null,
+        supplierContact: input.supplierContact ? normalizeText(input.supplierContact) : null,
+        purchaseLink: input.purchaseLink ? String(input.purchaseLink).trim() : null,
+        lastPurchasePriceIdr: num(input.lastPurchasePriceIdr),
+        lastPurchaseQty: num(input.lastPurchaseQty),
+        lastPurchaseUom: input.lastPurchaseUom ? normalizeText(input.lastPurchaseUom) : null,
+        lastYieldAmount: num(input.lastYieldAmount),
+        lastUnitCostIdr: num(input.lastUnitCostIdr),
       },
       tx,
     );
@@ -355,6 +372,14 @@ export async function updateIngredient(
   if (input.baseUnit !== undefined) data.base_unit = normalizeText(input.baseUnit);
   if (input.reorderLevel !== undefined) data.reorder_level = num(input.reorderLevel);
   if (input.isActive !== undefined) data.is_active = input.isActive;
+  if (input.supplierId !== undefined) data.supplier_id = input.supplierId;
+  if (input.supplierContact !== undefined) data.supplier_contact = input.supplierContact ? normalizeText(input.supplierContact) : null;
+  if (input.purchaseLink !== undefined) data.purchase_link = input.purchaseLink ? String(input.purchaseLink).trim() : null;
+  if (input.lastPurchasePriceIdr !== undefined) data.last_purchase_price_idr = num(input.lastPurchasePriceIdr);
+  if (input.lastPurchaseQty !== undefined) data.last_purchase_qty = num(input.lastPurchaseQty);
+  if (input.lastPurchaseUom !== undefined) data.last_purchase_uom = input.lastPurchaseUom ? normalizeText(input.lastPurchaseUom) : null;
+  if (input.lastYieldAmount !== undefined) data.last_yield_amount = num(input.lastYieldAmount);
+  if (input.lastUnitCostIdr !== undefined) data.last_unit_cost_idr = num(input.lastUnitCostIdr);
 
   return withTransaction(async (tx) => {
     const current = await inventoryRepo.findIngredientById(ingredientId, tx);

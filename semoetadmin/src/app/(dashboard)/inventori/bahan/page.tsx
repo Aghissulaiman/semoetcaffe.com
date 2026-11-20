@@ -167,6 +167,14 @@ export default function BahanBakuPage() {
             baseUnit: editTarget.baseUnit,
             reorderLevel: editTarget.reorderLevel,
             isActive: editTarget.isActive,
+            supplierId: editTarget.supplierId,
+            supplierContact: editTarget.supplierContact,
+            purchaseLink: editTarget.purchaseLink,
+            lastPurchasePriceIdr: editTarget.lastPurchasePriceIdr,
+            lastPurchaseQty: editTarget.lastPurchaseQty,
+            lastPurchaseUom: editTarget.lastPurchaseUom,
+            lastYieldAmount: editTarget.lastYieldAmount,
+            lastUnitCostIdr: editTarget.lastUnitCostIdr,
           }}
           onSave={() => {
             setEditTarget(null);

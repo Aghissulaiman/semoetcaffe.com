@@ -12,9 +12,14 @@ export async function listIngredients(
   return many(
     executor,
     `SELECT i.id, i.sku, i.name, i.base_unit, i.reorder_level, i.is_active,
+            i.supplier_id, i.supplier_contact, i.purchase_link,
+            i.last_purchase_price_idr, i.last_purchase_qty, i.last_purchase_uom,
+            i.last_yield_amount, i.last_unit_cost_idr,
             i.created_at, i.updated_at,
-            stock.on_hand, stock.last_movement_at
+            stock.on_hand, stock.last_movement_at,
+            s.name AS supplier_name
        FROM ingredients i
+       LEFT JOIN suppliers s ON s.id = i.supplier_id
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(im.quantity_delta), 0)::numeric AS on_hand,
@@ -55,9 +60,15 @@ export async function countIngredients(
 export async function findIngredientById(ingredientId: string, executor: Exec = db) {
   return one(
     executor,
-    `SELECT id, sku, name, base_unit, reorder_level, is_active, created_at, updated_at
-       FROM ingredients
-      WHERE id = $1`,
+    `SELECT i.id, i.sku, i.name, i.base_unit, i.reorder_level, i.is_active,
+            i.supplier_id, i.supplier_contact, i.purchase_link,
+            i.last_purchase_price_idr, i.last_purchase_qty, i.last_purchase_uom,
+            i.last_yield_amount, i.last_unit_cost_idr,
+            i.created_at, i.updated_at,
+            s.name AS supplier_name
+       FROM ingredients i
+       LEFT JOIN suppliers s ON s.id = i.supplier_id
+      WHERE i.id = $1`,
     [ingredientId],
   );
 }
@@ -71,15 +82,47 @@ export async function findIngredientBySku(sku: string, executor: Exec = db) {
 }
 
 export async function insertIngredient(
-  input: { sku: string; name: string; baseUnit: string; reorderLevel: number; isActive: boolean },
+  input: {
+    sku: string;
+    name: string;
+    baseUnit: string;
+    reorderLevel: number;
+    isActive: boolean;
+    supplierId?: string | null;
+    supplierContact?: string | null;
+    purchaseLink?: string | null;
+    lastPurchasePriceIdr?: number;
+    lastPurchaseQty?: number;
+    lastPurchaseUom?: string | null;
+    lastYieldAmount?: number;
+    lastUnitCostIdr?: number;
+  },
   executor: Exec = db,
 ) {
   return one(
     executor,
-    `INSERT INTO ingredients (sku, name, base_unit, reorder_level, is_active)
-     VALUES ($1,$2,$3,$4,$5)
-     RETURNING id, sku, name, base_unit, reorder_level, is_active, created_at`,
-    [input.sku, input.name, input.baseUnit, input.reorderLevel, input.isActive],
+    `INSERT INTO ingredients (sku, name, base_unit, reorder_level, is_active,
+       supplier_id, supplier_contact, purchase_link, last_purchase_price_idr,
+       last_purchase_qty, last_purchase_uom, last_yield_amount, last_unit_cost_idr)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     RETURNING id, sku, name, base_unit, reorder_level, is_active,
+       supplier_id, supplier_contact, purchase_link, last_purchase_price_idr,
+       last_purchase_qty, last_purchase_uom, last_yield_amount, last_unit_cost_idr, created_at`,
+    [
+      input.sku,
+      input.name,
+      input.baseUnit,
+      input.reorderLevel,
+      input.isActive,
+      input.supplierId ?? null,
+      input.supplierContact ?? null,
+      input.purchaseLink ?? null,
+      input.lastPurchasePriceIdr ?? 0,
+      input.lastPurchaseQty ?? 0,
+      input.lastPurchaseUom ?? null,
+      input.lastYieldAmount ?? 0,
+      input.lastUnitCostIdr ?? 0,
+    ],
   );
 }
 

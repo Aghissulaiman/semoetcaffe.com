@@ -250,6 +250,15 @@ export interface Ingredient {
   baseUnit: string;
   reorderLevel: number;
   isActive: boolean;
+  supplierId: string | null;
+  supplierName?: string | null;
+  supplierContact: string | null;
+  purchaseLink: string | null;
+  lastPurchasePriceIdr: number;
+  lastPurchaseQty: number;
+  lastPurchaseUom: string | null;
+  lastYieldAmount: number;
+  lastUnitCostIdr: number;
   onHand: number | null;
   lastMovementAt: string | null;
   createdAt: string;

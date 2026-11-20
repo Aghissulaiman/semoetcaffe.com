@@ -964,6 +964,14 @@ CREATE TABLE IF NOT EXISTS ingredients (
   base_unit text NOT NULL,
   reorder_level numeric(14,3) NOT NULL DEFAULT 0 CHECK (reorder_level >= 0),
   is_active boolean NOT NULL DEFAULT true,
+  supplier_id uuid REFERENCES suppliers(id) ON DELETE SET NULL,
+  supplier_contact text,
+  purchase_link text,
+  last_purchase_price_idr bigint NOT NULL DEFAULT 0,
+  last_purchase_qty numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_purchase_qty >= 0),
+  last_purchase_uom text,
+  last_yield_amount numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_yield_amount >= 0),
+  last_unit_cost_idr bigint NOT NULL DEFAULT 0 CHECK (last_unit_cost_idr >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -1029,6 +1037,20 @@ CREATE INDEX IF NOT EXISTS inventory_movements_date_public_idx ON public.invento
 -- Harga beli terakhir per bahan (dipakai sebagai default harga PO berikutnya).
 ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_purchase_price_idr bigint NOT NULL DEFAULT 0;
 ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_purchase_price_idr bigint NOT NULL DEFAULT 0;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS supplier_id uuid REFERENCES suppliers(id) ON DELETE SET NULL;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS supplier_contact text;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS purchase_link text;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_purchase_qty numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_purchase_qty >= 0);
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_purchase_uom text;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_yield_amount numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_yield_amount >= 0);
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS last_unit_cost_idr bigint NOT NULL DEFAULT 0 CHECK (last_unit_cost_idr >= 0);
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS supplier_id uuid REFERENCES suppliers(id) ON DELETE SET NULL;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS supplier_contact text;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS purchase_link text;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_purchase_qty numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_purchase_qty >= 0);
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_purchase_uom text;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_yield_amount numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_yield_amount >= 0);
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS last_unit_cost_idr bigint NOT NULL DEFAULT 0 CHECK (last_unit_cost_idr >= 0);
 
 -- -----------------------------------------------------------------------------
 -- Stok keluar (transfer gudang → outlet) dan stok opname

@@ -17,6 +17,14 @@ export const createIngredientSchema = z.object({
   baseUnit: z.string().trim().min(1).max(30),
   reorderLevel: z.coerce.number().min(0).default(0),
   isActive: z.boolean().default(true),
+  supplierId: uuidSchema.optional().nullable(),
+  supplierContact: z.string().trim().max(255).optional().nullable(),
+  purchaseLink: z.string().trim().max(500).optional().nullable(),
+  lastPurchasePriceIdr: z.coerce.number().int().min(0).default(0),
+  lastPurchaseQty: z.coerce.number().min(0).default(0),
+  lastPurchaseUom: z.string().trim().max(30).optional().nullable(),
+  lastYieldAmount: z.coerce.number().min(0).default(0),
+  lastUnitCostIdr: z.coerce.number().int().min(0).default(0),
 });
 
 export const updateIngredientSchema = z
@@ -25,6 +33,14 @@ export const updateIngredientSchema = z
     baseUnit: z.string().trim().max(30).optional(),
     reorderLevel: z.coerce.number().min(0).optional(),
     isActive: z.boolean().optional(),
+    supplierId: uuidSchema.optional().nullable(),
+    supplierContact: z.string().trim().max(255).optional().nullable(),
+    purchaseLink: z.string().trim().max(500).optional().nullable(),
+    lastPurchasePriceIdr: z.coerce.number().int().min(0).optional(),
+    lastPurchaseQty: z.coerce.number().min(0).optional(),
+    lastPurchaseUom: z.string().trim().max(30).optional().nullable(),
+    lastYieldAmount: z.coerce.number().min(0).optional(),
+    lastUnitCostIdr: z.coerce.number().int().min(0).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Minimal satu field harus dikirim',

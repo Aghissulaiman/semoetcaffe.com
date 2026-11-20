@@ -13,6 +13,14 @@ type IngredientFormValues = {
   baseUnit: string;
   reorderLevel: number;
   isActive: boolean;
+  supplierId?: string | null;
+  supplierContact?: string | null;
+  purchaseLink?: string | null;
+  lastPurchasePriceIdr?: number;
+  lastPurchaseQty?: number;
+  lastPurchaseUom?: string | null;
+  lastYieldAmount?: number;
+  lastUnitCostIdr?: number;
 };
 
 type IngredientFormProps = {
@@ -25,6 +33,14 @@ type IngredientFormProps = {
     baseUnit: string;
     reorderLevel: number;
     isActive: boolean;
+    supplierId?: string | null;
+    supplierContact?: string | null;
+    purchaseLink?: string | null;
+    lastPurchasePriceIdr?: number;
+    lastPurchaseQty?: number;
+    lastPurchaseUom?: string | null;
+    lastYieldAmount?: number;
+    lastUnitCostIdr?: number;
   };
   onSave: (data: IngredientFormValues) => void;
 };
@@ -51,15 +67,23 @@ export default function IngredientFormModal({
     isActive: ingredient?.isActive ?? true,
   });
 
-  // Extended fields (UI only for now, not sent to backend unless API supports)
-  const [supplierId, setSupplierId] = useState<string>("");
-  const [supplierContact, setSupplierContact] = useState<string>("");
-  const [supplierLink, setSupplierLink] = useState<string>("");
-  const [purchasePrice, setPurchasePrice] = useState<string>("");
-  const [purchaseQty, setPurchaseQty] = useState<string>("");
-  const [purchaseUom, setPurchaseUom] = useState<string>("");
-  const [yieldAmount, setYieldAmount] = useState<string>("");
-  const [unitCost, setUnitCost] = useState<string>("");
+  // Extended fields
+  const [supplierId, setSupplierId] = useState<string>(ingredient?.supplierId ?? "");
+  const [supplierContact, setSupplierContact] = useState<string>(ingredient?.supplierContact ?? "");
+  const [supplierLink, setSupplierLink] = useState<string>(ingredient?.purchaseLink ?? "");
+  const [purchasePrice, setPurchasePrice] = useState<string>(
+    ingredient?.lastPurchasePriceIdr ? String(ingredient.lastPurchasePriceIdr) : ""
+  );
+  const [purchaseQty, setPurchaseQty] = useState<string>(
+    ingredient?.lastPurchaseQty ? String(ingredient.lastPurchaseQty) : ""
+  );
+  const [purchaseUom, setPurchaseUom] = useState<string>(ingredient?.lastPurchaseUom ?? ingredient?.baseUnit ?? "");
+  const [yieldAmount, setYieldAmount] = useState<string>(
+    ingredient?.lastYieldAmount ? String(ingredient.lastYieldAmount) : ""
+  );
+  const [unitCost, setUnitCost] = useState<string>(
+    ingredient?.lastUnitCostIdr ? String(ingredient.lastUnitCostIdr) : ""
+  );
   const [unitCostEdited, setUnitCostEdited] = useState(false);
 
   const suppliers = useApi<Supplier[]>("/admin/suppliers?limit=100");
@@ -68,15 +92,14 @@ export default function IngredientFormModal({
 
   useEffect(() => {
     if (!visible) return;
-    // reset extended fields when opening
-    setSupplierId("");
-    setSupplierContact("");
-    setSupplierLink("");
-    setPurchasePrice("");
-    setPurchaseQty("");
-    setPurchaseUom(ingredient?.baseUnit ?? "");
-    setYieldAmount("");
-    setUnitCost("");
+    setSupplierId(ingredient?.supplierId ?? "");
+    setSupplierContact(ingredient?.supplierContact ?? "");
+    setSupplierLink(ingredient?.purchaseLink ?? "");
+    setPurchasePrice(ingredient?.lastPurchasePriceIdr ? String(ingredient.lastPurchasePriceIdr) : "");
+    setPurchaseQty(ingredient?.lastPurchaseQty ? String(ingredient.lastPurchaseQty) : "");
+    setPurchaseUom(ingredient?.lastPurchaseUom ?? ingredient?.baseUnit ?? form.baseUnit ?? "");
+    setYieldAmount(ingredient?.lastYieldAmount ? String(ingredient.lastYieldAmount) : "");
+    setUnitCost(ingredient?.lastUnitCostIdr ? String(ingredient.lastUnitCostIdr) : "");
     setUnitCostEdited(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
@@ -133,19 +156,25 @@ export default function IngredientFormModal({
 
     setLoading(true);
     try {
-      const payload = {
+      const payload: IngredientFormValues = {
         ...form,
         sku: form.sku.trim().toUpperCase(),
         name: form.name.trim(),
         baseUnit: form.baseUnit.trim(),
+        supplierId: supplierId || null,
+        supplierContact: supplierContact.trim() || null,
+        purchaseLink: supplierLink.trim() || null,
+        lastPurchasePriceIdr: Number(purchasePrice) || 0,
+        lastPurchaseQty: Number(purchaseQty) || 0,
+        lastPurchaseUom: purchaseUom.trim() || null,
+        lastYieldAmount: Number(yieldAmount) || 0,
+        lastUnitCostIdr: Number(unitCost) || 0,
       };
       if (ingredient?.id) {
         await apiPatch(`/admin/ingredients/${ingredient.id}`, payload);
       } else {
         await apiPost("/admin/ingredients", payload);
       }
-      // NOTE: extended fields (supplier, purchase, yield, unitCost) are collected in UI
-      // but not persisted by current backend API. Hook them up when API supports it.
       onSave(payload);
       onClose();
     } catch (err) {
