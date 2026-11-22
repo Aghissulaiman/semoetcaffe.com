@@ -15,7 +15,7 @@ import { movementTypeLabel } from "@/lib/labels";
 import { inputClass, primaryButtonClass, secondaryButtonClass } from "@/lib/ui";
 import type { CsvColumn } from "@/lib/csv";
 import type { StockLocation, StockMovement } from "@/types/api";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 const LIMIT = 20;
 const MOVEMENT_TYPES = [
@@ -56,6 +56,7 @@ export default function StockMovementsPage() {
     to: "",
   });
   const [movementOpen, setMovementOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
 
@@ -69,6 +70,18 @@ export default function StockMovementsPage() {
       to: movementApplied.to,
     })}`,
   );
+
+  const filteredMovements = useMemo(() => {
+    const list = movements.data ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (m) =>
+        (m.ingredientName ?? "").toLowerCase().includes(q) ||
+        (m.ingredientSku ?? "").toLowerCase().includes(q) ||
+        (m.stockLocationName ?? "").toLowerCase().includes(q),
+    );
+  }, [movements.data, search]);
 
   return (
     <div className="space-y-6">
@@ -128,6 +141,15 @@ export default function StockMovementsPage() {
             allowAll
           />
         </div>
+        <label className="flex min-w-[200px] flex-1 flex-col gap-1">
+          <span className="text-theme-xs font-medium text-coffee-muted">Cari</span>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Bahan, SKU, atau lokasi"
+            className={inputClass}
+          />
+        </label>
         <button type="submit" className={primaryButtonClass}>
           Terapkan
         </button>
@@ -136,6 +158,7 @@ export default function StockMovementsPage() {
           onClick={() => {
             setMovementFilter({ movementType: "", stockLocationId: "", from: "", to: "" });
             setMovementApplied({ movementType: "", stockLocationId: "", from: "", to: "" });
+            setSearch("");
             setMovementPage(1);
           }}
           className={secondaryButtonClass}
@@ -151,7 +174,7 @@ export default function StockMovementsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <ExportCsvButton
               filename="pergerakan-stok.csv"
-              rows={movements.data ?? []}
+              rows={filteredMovements}
               columns={MOVEMENT_EXPORT_COLUMNS}
               title="Pergerakan Stok"
             />
@@ -169,11 +192,11 @@ export default function StockMovementsPage() {
           <Skeleton className="h-[420px] w-full" />
         ) : movements.error ? (
           <ErrorBlock message={movements.error} onRetry={movements.reload} />
-        ) : (movements.data?.length ?? 0) === 0 ? (
+        ) : filteredMovements.length === 0 ? (
           <EmptyBlock message="Belum ada pergerakan stok" />
         ) : (
           <div className="space-y-4">
-            <StockMovementsTable movements={movements.data!} />
+            <StockMovementsTable movements={filteredMovements} />
             <Pagination
               page={movements.meta?.page ?? movementPage}
               totalPages={movements.meta?.totalPages ?? 1}

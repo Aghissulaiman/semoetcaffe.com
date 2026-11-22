@@ -74,6 +74,7 @@ function RoleForm({ role, permissions, onClose, onSaved }: RoleFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
+  const [showPreview, setShowPreview] = useState(false);
   const search = query.trim().toLowerCase();
 
   const grouped = useMemo(() => {
@@ -101,6 +102,22 @@ function RoleForm({ role, permissions, onClose, onSaved }: RoleFormProps) {
       ] as const)
       .sort((a, b) => a[0].localeCompare(b[0]));
   }, [permissions, search]);
+
+  const allowedMenuPreview = useMemo(() => {
+    const lines: string[] = [];
+    for (const group of MENU_GROUPS) {
+      for (const item of group.items) {
+        const entries = item.children?.length ? item.children : [item];
+        for (const entry of entries) {
+          if (hasPermission(selectedKeys, entry.permission)) {
+            const label = item.children?.length ? `${item.label} › ${entry.label}` : item.label;
+            lines.push(label);
+          }
+        }
+      }
+    }
+    return lines;
+  }, [selectedKeys]);
 
   const toggleKey = (key: string) => {
     setSelectedKeys((prev) =>
@@ -207,60 +224,32 @@ function RoleForm({ role, permissions, onClose, onSaved }: RoleFormProps) {
           </label>
         </section>
 
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-theme-sm font-semibold text-coffee-espresso dark:text-coffee-cream">
-              Pratinjau Menu yang Bisa Dibuka
-            </p>
-            <span className="text-theme-xs text-coffee-muted">
-              Berdasarkan izin dipilih
+        <section className="rounded-xl border border-coffee-linen dark:border-coffee-night-border">
+          <button
+            type="button"
+            onClick={() => setShowPreview((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+          >
+            <span className="text-theme-sm font-semibold text-coffee-espresso dark:text-coffee-cream">
+              Pratinjau Menu ({allowedMenuPreview.length})
             </span>
-          </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {MENU_GROUPS.map((group) => (
-              <div
-                key={group.label}
-                className="rounded-xl border border-coffee-linen p-3 dark:border-coffee-night-border"
-              >
-                <p className="text-theme-xs font-semibold uppercase tracking-wide text-coffee-muted">
-                  {group.label}
-                </p>
-                <ul className="mt-1.5 space-y-1">
-                  {group.items.flatMap((item) => {
-                    const entries = item.children?.length ? item.children : [item];
-                    return entries.map((entry) => {
-                      const allowed = hasPermission(selectedKeys, entry.permission);
-                      return (
-                        <li
-                          key={`${item.label}-${entry.href}`}
-                          className={cn(
-                            "flex items-center gap-1.5 text-theme-xs",
-                            allowed
-                              ? "text-coffee-espresso dark:text-coffee-cream"
-                              : "text-coffee-muted/60",
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-                              allowed
-                                ? "bg-coffee-success"
-                                : "bg-coffee-linen dark:bg-coffee-night-border",
-                            )}
-                          />
-                          {item.children?.length ? `${item.label} · ${entry.label}` : item.label}
-                        </li>
-                      );
-                    });
-                  })}
+            <span className="text-theme-xs text-coffee-muted">{showPreview ? "Sembunyikan" : "Tampilkan"}</span>
+          </button>
+          {showPreview && (
+            <div className="border-t border-coffee-linen px-3 py-2.5 dark:border-coffee-night-border">
+              {allowedMenuPreview.length === 0 ? (
+                <p className="text-theme-xs text-coffee-muted">Belum ada menu yang bisa diakses dengan izin terpilih.</p>
+              ) : (
+                <ul className="list-disc space-y-1 pl-5 text-theme-sm text-coffee-espresso dark:text-coffee-cream">
+                  {allowedMenuPreview.map((label) => (
+                    <li key={label}>{label}</li>
+                  ))}
                 </ul>
-              </div>
-            ))}
-          </div>
-          <p className="mt-2 text-theme-xs text-coffee-muted">
-            Pengelolaan <span className="font-semibold">Pengguna</span> dan{" "}
-            <span className="font-semibold">Peran &amp; Izin</span> hanya dapat diubah
-            oleh peran Admin/Super Admin.
+              )}
+            </div>
+          )}
+          <p className="px-3 pb-3 text-theme-xs text-coffee-muted">
+            Pengelolaan <span className="font-semibold">Pengguna</span> dan <span className="font-semibold">Peran &amp; Izin</span> hanya untuk Admin/Super Admin.
           </p>
         </section>
 

@@ -84,6 +84,11 @@ import {
   orderIdParamSchema,
   updateOrderStatusSchema,
 } from '../validators/order.validator.js';
+import {
+  createPreparationStationSchema,
+  updatePreparationStationSchema,
+  preparationStationIdParamSchema,
+} from '../validators/preparationStation.validator.js';
 
 export const adminRouter = Router();
 
@@ -445,6 +450,49 @@ adminRouter.delete(
   writeLimiter,
   validate({ params: categoryIdParamSchema }),
   asyncHandler(adminController.deleteCategory),
+);
+
+// GET /admin/preparation-stations
+adminRouter.get(
+  '/admin/preparation-stations',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.READ),
+  readLimiter,
+  asyncHandler(adminController.listPreparationStations),
+);
+
+// POST /admin/preparation-stations
+adminRouter.post(
+  '/admin/preparation-stations',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.CREATE),
+  writeLimiter,
+  validate({ body: createPreparationStationSchema }),
+  asyncHandler(adminController.createPreparationStation),
+);
+
+// PATCH /admin/preparation-stations/:id
+adminRouter.patch(
+  '/admin/preparation-stations/:id',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.UPDATE),
+  writeLimiter,
+  validate({ params: preparationStationIdParamSchema, body: updatePreparationStationSchema }),
+  asyncHandler(adminController.updatePreparationStation),
+);
+
+// DELETE /admin/preparation-stations/:id
+adminRouter.delete(
+  '/admin/preparation-stations/:id',
+  authenticate,
+  requireStaff,
+  requirePermission(RESOURCES.MENU, ACTIONS.DELETE),
+  writeLimiter,
+  validate({ params: preparationStationIdParamSchema }),
+  asyncHandler(adminController.deletePreparationStation),
 );
 
 // GET /admin/products - daftar produk termasuk yang nonaktif

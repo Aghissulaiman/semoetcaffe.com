@@ -206,7 +206,7 @@ export function buildProductQuery(
 
   return {
     text: `
-      SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind,
+      SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind, p.preparation_station,
              p.is_active, p.is_featured, p.available_from, p.available_until, p.sort_order,
              p.created_at, p.updated_at,
              c.name AS category_name, c.slug AS category_slug,
@@ -331,7 +331,7 @@ function stripTrailingLimit(sql: string): string {
 export async function findProductBySlug(slug: string, executor: Exec = db) {
   return one(
     executor,
-    `SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind,
+    `SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind, p.preparation_station,
             p.is_active, p.is_featured, p.available_from, p.available_until, p.sort_order,
             p.created_at, p.updated_at,
             c.name AS category_name, c.slug AS category_slug, c.id AS category_id
@@ -345,7 +345,7 @@ export async function findProductBySlug(slug: string, executor: Exec = db) {
 export async function findProductById(productId: string, executor: Exec = db) {
   return one(
     executor,
-    `SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind,
+    `SELECT p.id, p.category_id, p.name, p.slug, p.description, p.product_kind, p.preparation_station,
             p.is_active, p.is_featured, p.available_from, p.available_until, p.sort_order,
             p.created_at, p.updated_at,
             c.name AS category_name, c.slug AS category_slug

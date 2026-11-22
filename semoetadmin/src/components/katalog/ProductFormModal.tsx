@@ -21,6 +21,7 @@ import type {
   AdminProductVariants,
   AdminVariant,
   Ingredient,
+  PreparationStation,
   Product,
   ProductCategory,
   RecipeItem,
@@ -243,6 +244,9 @@ function ProductForm({
   const [categorySaving, setCategorySaving] = useState(false);
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [productKind, setProductKind] = useState(product?.productKind ?? "standard");
+  const [preparationStation, setPreparationStation] = useState<string>(
+    product?.preparationStation ?? "kitchen",
+  );
   const [description, setDescription] = useState(product?.descriptionShort ?? "");
   const [isActive, setIsActive] = useState(product?.isActive ?? true);
   const [isFeatured, setIsFeatured] = useState(product?.isFeatured ?? false);
@@ -259,6 +263,7 @@ function ProductForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100");
+  const stationsApi = useApi<PreparationStation[]>("/admin/preparation-stations");
 
   const handleImageUploaded = (uploaded: UploadedImage) => {
     setImage(uploaded);
@@ -433,6 +438,7 @@ function ProductForm({
           name: name.trim(),
           categoryId,
           productKind,
+          preparationStation,
           descriptionShort: description.trim() || null,
           isActive,
           isFeatured,
@@ -454,6 +460,7 @@ function ProductForm({
           name: name.trim(),
           categoryId,
           productKind,
+          preparationStation,
           descriptionShort: description.trim() || null,
           isActive,
           isFeatured,
@@ -644,6 +651,23 @@ function ProductForm({
                   {productKindLabel(kind)}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={fieldLabelClass}>Dibuat di</span>
+            <select
+              value={preparationStation}
+              onChange={(event) => setPreparationStation(event.target.value)}
+              className={inputClass}
+            >
+              {(stationsApi.data ?? [])
+                .filter((s) => s.isActive || s.code === preparationStation)
+                .map((s) => (
+                  <option key={s.id} value={s.code}>
+                    {s.name}
+                  </option>
+                ))}
+              {(stationsApi.data ?? []).length === 0 && <option value="kitchen">Koki (Dapur)</option>}
             </select>
           </label>
           <label className="flex flex-col gap-1 sm:col-span-2">

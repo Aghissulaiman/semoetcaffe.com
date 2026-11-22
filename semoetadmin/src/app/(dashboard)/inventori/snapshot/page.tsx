@@ -9,11 +9,12 @@ import { useApi } from "@/hooks/useApi";
 import { buildQuery } from "@/lib/client";
 import { inputClass, secondaryButtonClass } from "@/lib/ui";
 import type { StockLocation, StockSnapshot } from "@/types/api";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 export default function StockSnapshotPage() {
   const [snapshotLocationId, setSnapshotLocationId] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
   const effectiveSnapshotLocation =
@@ -26,6 +27,20 @@ export default function StockSnapshotPage() {
         })}`
       : null,
   );
+
+  const filteredSnapshot = useMemo(() => {
+    if (!snapshot.data) return null;
+    const q = search.trim().toLowerCase();
+    if (!q) return snapshot.data;
+    return {
+      ...snapshot.data,
+      items: snapshot.data.items.filter(
+        (item) =>
+          item.name.toLowerCase().includes(q) ||
+          (item.sku ?? "").toLowerCase().includes(q),
+      ),
+    };
+  }, [snapshot.data, search]);
 
   return (
     <div className="space-y-6">
@@ -49,6 +64,15 @@ export default function StockSnapshotPage() {
             ))}
           </select>
         </label>
+        <label className="flex min-w-[220px] flex-1 flex-col gap-1">
+          <span className="text-theme-xs font-medium text-coffee-muted">Cari bahan</span>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Nama atau SKU"
+            className={inputClass}
+          />
+        </label>
       </div>
 
       <ComponentCard
@@ -70,10 +94,10 @@ export default function StockSnapshotPage() {
           <Skeleton className="h-[420px] w-full" />
         ) : snapshot.error ? (
           <ErrorBlock message={snapshot.error} onRetry={snapshot.reload} />
-        ) : !snapshot.data ? (
+        ) : !filteredSnapshot ? (
           <EmptyBlock message="Belum ada data stok" />
         ) : (
-          <StockSnapshotView snapshot={snapshot.data} />
+          <StockSnapshotView snapshot={filteredSnapshot} />
         )}
       </ComponentCard>
 

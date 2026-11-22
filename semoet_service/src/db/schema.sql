@@ -220,6 +220,22 @@ CREATE TABLE IF NOT EXISTS product_categories (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS preparation_stations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  sort_order integer NOT NULL DEFAULT 0,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO preparation_stations (code, name, sort_order, is_active) VALUES
+  ('kitchen', 'Koki (Dapur)', 1, true),
+  ('bar', 'Bar', 2, true)
+ON CONFLICT (code) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS products (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   category_id uuid NOT NULL REFERENCES product_categories(id) ON DELETE RESTRICT,
@@ -227,6 +243,7 @@ CREATE TABLE IF NOT EXISTS products (
   slug text NOT NULL UNIQUE,
   description text,
   product_kind text NOT NULL DEFAULT 'standard' CHECK (product_kind IN ('food','drink','coffee','snack','dessert','bundle','buffet','event','other','standard')),
+  preparation_station text NOT NULL DEFAULT 'kitchen',
   is_active boolean NOT NULL DEFAULT true,
   is_featured boolean NOT NULL DEFAULT false,
   available_from timestamptz,
@@ -239,10 +256,12 @@ CREATE TABLE IF NOT EXISTS products (
   CHECK (available_until IS NULL OR available_from IS NULL OR available_until > available_from)
 );
 ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS preparation_station text NOT NULL DEFAULT 'kitchen';
 CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Salinan di schema `public` (runtime app memakai search_path default → public).
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS deleted_by uuid REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS preparation_station text NOT NULL DEFAULT 'kitchen';
 CREATE INDEX IF NOT EXISTS products_deleted_at_public_idx ON public.products(deleted_at) WHERE deleted_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_images (

@@ -228,6 +228,7 @@ function shapeAdminProduct(
     categoryId: str(row.categoryId),
     categoryName: strOrNull(row.categoryName),
     productKind: str(row.productKind),
+    preparationStation: strOrNull(row.preparationStation) ?? "kitchen",
     description: strOrNull(row.description),
     isActive: bool(row.isActive),
     isFeatured: bool(row.isFeatured),
@@ -1478,6 +1479,7 @@ export async function createProduct(
         slug,
         description: input.descriptionShort ?? null,
         productKind: input.productKind,
+        preparationStation: input.preparationStation ?? "kitchen",
         isActive: input.isActive,
         isFeatured: input.isFeatured,
       },
@@ -1563,6 +1565,7 @@ export async function updateProduct(
       data.category_id = input.categoryId;
     }
     if (input.productKind !== undefined) data.product_kind = input.productKind;
+    if (input.preparationStation !== undefined) data.preparation_station = input.preparationStation;
     if (input.descriptionShort !== undefined) data.description = input.descriptionShort;
     if (input.isActive !== undefined) data.is_active = input.isActive;
     if (input.isFeatured !== undefined) data.is_featured = input.isFeatured;

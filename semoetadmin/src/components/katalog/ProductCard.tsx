@@ -57,6 +57,9 @@ export default function ProductCard({ product, onSelect, onEdit, onDelete }: Pro
           <p className="text-theme-xs text-coffee-muted">
             {product.category?.name ?? "Tanpa Kategori"} · {productKindLabel(product.productKind)}
           </p>
+          <p className="mt-1 text-theme-xs text-coffee-muted">
+            Dibuat di: {product.preparationStation === "bar" ? "Bar" : product.preparationStation === "kitchen" ? "Koki" : (product.preparationStation ?? "Koki")}
+          </p>
 
           <p className="mt-2 text-theme-sm font-bold text-coffee-brown dark:text-coffee-caramel">
             {priceRange(product)}

@@ -297,6 +297,7 @@ function shapeProductBase(row: Record<string, unknown>) {
     name: String(row.name ?? ''),
     description: strOrNull(row.description),
     productKind: strOrNull(row.productKind),
+    preparationStation: strOrNull(row.preparationStation) ?? "kitchen",
     isFeatured: bool(row.isFeatured),
     isActive: bool(row.isActive),
     availableFrom: iso(row.availableFrom),

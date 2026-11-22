@@ -583,6 +583,14 @@ export interface ProductCategory {
   children?: ProductCategory[];
 }
 
+export interface PreparationStation {
+  id: string;
+  code: string;
+  name: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
 export interface ProductImage {
   id: string;
   url: string | null;
@@ -656,6 +664,7 @@ export interface AdminProduct {
   categoryId: string;
   categoryName: string | null;
   productKind: string;
+  preparationStation?: "kitchen" | "bar" | string | null;
   description: string | null;
   isActive: boolean;
   isFeatured: boolean;
@@ -680,6 +689,7 @@ export interface Product {
   name: string;
   descriptionShort: string | null;
   productKind: string;
+  preparationStation?: "kitchen" | "bar" | string | null;
   isFeatured: boolean;
   isActive: boolean;
   basePriceIdr: number;

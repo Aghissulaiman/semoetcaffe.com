@@ -6,6 +6,7 @@ import * as expenseService from '../services/expense.service.js';
 import * as orderService from '../services/order.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as promoService from '../services/promo.service.js';
+import * as prepStationService from '../services/preparationStation.service.js';
 import { sendCreated, sendPaginated, sendSuccess } from '../utils/response.js';
 import { getBody, getIp, getParams, getQuery, getUserId } from '../utils/request.js';
 import type {
@@ -332,6 +333,34 @@ export async function updateCategory(req: Request, res: Response): Promise<Respo
 export async function deleteCategory(req: Request, res: Response): Promise<Response> {
   const { id } = getParams<{ id: string }>(req);
   const data = await adminService.deleteCategory(id, getUserId(req), auditContext(req));
+  return sendSuccess(res, data);
+}
+
+// GET /admin/preparation-stations
+export async function listPreparationStations(req: Request, res: Response): Promise<Response> {
+  const data = await prepStationService.listPreparationStations(false);
+  return sendSuccess(res, data);
+}
+
+// POST /admin/preparation-stations
+export async function createPreparationStation(req: Request, res: Response): Promise<Response> {
+  const body = getBody<{ name: string; code?: string; sortOrder?: number; isActive?: boolean }>(req);
+  const data = await prepStationService.createPreparationStation(body as any);
+  return sendCreated(res, data);
+}
+
+// PATCH /admin/preparation-stations/:id
+export async function updatePreparationStation(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const body = getBody<{ name?: string; code?: string; sortOrder?: number; isActive?: boolean }>(req);
+  const data = await prepStationService.updatePreparationStation(id, body as any);
+  return sendSuccess(res, data);
+}
+
+// DELETE /admin/preparation-stations/:id
+export async function deletePreparationStation(req: Request, res: Response): Promise<Response> {
+  const { id } = getParams<{ id: string }>(req);
+  const data = await prepStationService.deletePreparationStation(id);
   return sendSuccess(res, data);
 }
 

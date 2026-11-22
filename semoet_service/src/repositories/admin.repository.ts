@@ -919,6 +919,7 @@ export async function insertProduct(
     slug: string;
     description: string | null;
     productKind: string;
+    preparationStation?: string;
     isActive: boolean;
     isFeatured: boolean;
   },
@@ -926,8 +927,8 @@ export async function insertProduct(
 ) {
   return one<{ id: string }>(
     executor,
-    `INSERT INTO products (category_id, name, slug, description, product_kind, is_active, is_featured)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO products (category_id, name, slug, description, product_kind, preparation_station, is_active, is_featured)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      RETURNING id`,
     [
       input.categoryId,
@@ -935,6 +936,7 @@ export async function insertProduct(
       input.slug,
       input.description,
       input.productKind,
+      input.preparationStation ?? "kitchen",
       input.isActive,
       input.isFeatured,
     ],

@@ -24,7 +24,8 @@ export default function StockOutPage() {
 
   const [page, setPage] = useState(1);
   const [locationId, setLocationId] = useState("");
-  const [applied, setApplied] = useState({ status: "", from: "", to: "" });
+  const [applied, setApplied] = useState({ status: "", from: "", to: "", q: "" });
+  const [searchDraft, setSearchDraft] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detail, setDetail] = useState<StockOutDetail | null>(null);
@@ -40,6 +41,7 @@ export default function StockOutPage() {
       fromStockLocationId: effectiveLocationId,
       from: applied.from,
       to: applied.to,
+      q: applied.q || undefined,
     })}`,
   );
 
@@ -85,9 +87,10 @@ export default function StockOutPage() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            setApplied((prev) => ({ ...prev, q: searchDraft }));
             setPage(1);
           }}
-          className="mb-6 grid grid-cols-1 gap-3 rounded-2xl border border-coffee-linen bg-white p-4 sm:grid-cols-4 dark:border-coffee-night-border dark:bg-coffee-night-soft"
+          className="mb-6 grid grid-cols-1 gap-3 rounded-2xl border border-coffee-linen bg-white p-4 sm:grid-cols-5 dark:border-coffee-night-border dark:bg-coffee-night-soft"
         >
           <label className="flex flex-col gap-1">
             <span className="text-theme-xs font-medium text-coffee-muted">Lokasi Stok</span>
@@ -116,6 +119,15 @@ export default function StockOutPage() {
             <span className="text-theme-xs font-medium text-coffee-muted">Dari Tanggal</span>
             <DateRangePicker from={applied.from} to={applied.to} onChange={(from, to) => { setApplied((prev) => ({ ...prev, from, to })); setPage(1); }} allowAll={false} />
           </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-theme-xs font-medium text-coffee-muted">Cari</span>
+            <input
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value)}
+              placeholder="No dok / catatan"
+              className={inputClass}
+            />
+          </label>
           <div className="flex items-end gap-2">
             <button type="submit" className={primaryButtonClass}>
               Terapkan
@@ -124,7 +136,8 @@ export default function StockOutPage() {
               type="button"
               className={secondaryButtonClass}
               onClick={() => {
-                setApplied({ status: "", from: "", to: "" });
+                setApplied({ status: "", from: "", to: "", q: "" });
+                setSearchDraft("");
                 setPage(1);
               }}
             >

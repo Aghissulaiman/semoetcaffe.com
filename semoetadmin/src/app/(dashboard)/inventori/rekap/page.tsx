@@ -9,7 +9,7 @@ import { buildQuery } from "@/lib/client";
 import { monthBounds, monthOfValue, todayValue } from "@/lib/date-range";
 import { inputClass, primaryButtonClass, secondaryButtonClass } from "@/lib/ui";
 import type { StockLocation, StockSummary } from "@/types/api";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 export default function StockRekapPage() {
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
@@ -23,10 +23,23 @@ export default function StockRekapPage() {
   const [locationId, setLocationId] = useState("");
   const [from, setFrom] = useState(monthBoundsValue.start);
   const [to, setTo] = useState(monthBoundsValue.end);
+  const [search, setSearch] = useState("");
 
   const summary = useApi<StockSummary>(
     `/admin/stock/summary${buildQuery({ stockLocationId: locationId || undefined, from, to })}`,
   );
+
+  const filteredSummary = useMemo(() => {
+    if (!summary.data) return null;
+    const q = search.trim().toLowerCase();
+    if (!q) return summary.data;
+    return {
+      ...summary.data,
+      items: summary.data.items.filter(
+        (it) => it.name.toLowerCase().includes(q) || (it.sku ?? "").toLowerCase().includes(q),
+      ),
+    };
+  }, [summary.data, search]);
 
   return (
     <div className="space-y-6">
@@ -59,6 +72,10 @@ export default function StockRekapPage() {
             <span className="text-theme-xs font-medium text-coffee-muted">Ke</span>
             <input type="date" value={to} onChange={(event) => setTo(event.target.value)} className={inputClass} />
           </label>
+          <label className="flex min-w-[200px] flex-1 flex-col gap-1">
+            <span className="text-theme-xs font-medium text-coffee-muted">Cari bahan</span>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nama atau SKU" className={inputClass} />
+          </label>
           <button type="submit" className={primaryButtonClass}>
             Terapkan
           </button>
@@ -68,6 +85,7 @@ export default function StockRekapPage() {
             onClick={() => {
               setFrom(monthBoundsValue.start);
               setTo(monthBoundsValue.end);
+              setSearch("");
             }}
           >
             Bulan Ini
@@ -78,10 +96,10 @@ export default function StockRekapPage() {
           <Skeleton className="h-[420px] w-full" />
         ) : summary.error ? (
           <ErrorBlock message={summary.error} onRetry={summary.reload} />
-        ) : !summary.data ? (
+        ) : !filteredSummary ? (
           <EmptyBlock message="Belum ada data pergerakan stok" />
         ) : (
-          <StockSummaryTable summary={summary.data} />
+          <StockSummaryTable summary={filteredSummary} />
         )}
       </ComponentCard>
     </div>

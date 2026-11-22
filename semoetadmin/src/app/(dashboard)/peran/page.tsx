@@ -25,10 +25,10 @@ export default function PeranPage() {
 
   const [form, setForm] = useState<FormState>({ open: false, role: null });
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+  const [showCatalog, setShowCatalog] = useState(false);
 
   const permissionsReady = Boolean(permissions.data);
 
-  // Backend membatasi kelola peran ke peran Admin/Super Admin.
   const isAdmin = Boolean(
     me?.roles.some((role) => role.code === "admin" || role.code === "super_admin"),
   );
@@ -49,7 +49,7 @@ export default function PeranPage() {
 
       <ComponentCard
         title="Peran"
-        desc="Kelompok hak akses beserta jumlah izin & pengguna"
+        desc="Kelola peran dan izin akses"
         action={
           <button
             type="button"
@@ -80,20 +80,32 @@ export default function PeranPage() {
         )}
       </ComponentCard>
 
-      <ComponentCard
-        title="Katalog Izin"
-        desc={`${formatNumber(permissions.data?.length)} izin tersedia dalam format resource:action`}
-      >
-        {permissions.loading && !permissions.data ? (
-          <Skeleton className="h-[320px] w-full" />
-        ) : permissions.error ? (
-          <ErrorBlock message={permissions.error} onRetry={permissions.reload} />
-        ) : (permissions.data?.length ?? 0) === 0 ? (
-          <EmptyBlock message="Belum ada izin" />
-        ) : (
-          <PermissionCatalog permissions={permissions.data!} />
+      <div className="rounded-2xl border border-coffee-linen bg-white dark:border-coffee-night-border dark:bg-coffee-night-soft">
+        <button
+          type="button"
+          onClick={() => setShowCatalog((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 px-5 py-4 text-left"
+        >
+          <div>
+            <p className="text-theme-sm font-semibold text-coffee-espresso dark:text-coffee-cream">Daftar Izin</p>
+            <p className="text-theme-xs text-coffee-muted">{formatNumber(permissions.data?.length ?? 0)} izin tersedia</p>
+          </div>
+          <span className="text-theme-xs text-coffee-muted">{showCatalog ? "Sembunyikan" : "Tampilkan"}</span>
+        </button>
+        {showCatalog && (
+          <div className="border-t border-coffee-linen px-5 pb-5 pt-4 dark:border-coffee-night-border">
+            {permissions.loading && !permissions.data ? (
+              <Skeleton className="h-[320px] w-full" />
+            ) : permissions.error ? (
+              <ErrorBlock message={permissions.error} onRetry={permissions.reload} />
+            ) : (permissions.data?.length ?? 0) === 0 ? (
+              <EmptyBlock message="Belum ada izin" />
+            ) : (
+              <PermissionCatalog permissions={permissions.data!} />
+            )}
+          </div>
         )}
-      </ComponentCard>
+      </div>
 
       {form.open && permissionsReady && (
         <RoleFormModal
