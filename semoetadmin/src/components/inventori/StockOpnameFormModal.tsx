@@ -2,6 +2,7 @@
 
 import AppModal from "@/components/common/AppModal";
 import IngredientPicker from "@/components/common/IngredientPicker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiPatch, apiPost } from "@/lib/client";
 import { toDateInputValue } from "@/lib/format";
@@ -11,7 +12,7 @@ import {
   secondaryButtonClass,
   textareaClass,
 } from "@/lib/ui";
-import type { Ingredient, StockLocation, StockOpnameDocument, StockOpnameItem, StockSnapshot } from "@/types/api";
+import type { StockLocation, StockOpnameDocument, StockOpnameItem, StockSnapshot } from "@/types/api";
 import { cn } from "@/utils";
 import { useEffect, useMemo, useState } from "react";
 
@@ -38,7 +39,7 @@ export default function StockOpnameFormModal({
 }: StockOpnameFormModalProps) {
   const isEdit = Boolean(initial);
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100");
+  const ingredients = useAllIngredients();
   const [locationId, setLocationId] = useState("");
   const [opnameDate, setOpnameDate] = useState(() => toDateInputValue(new Date()));
   const [notes, setNotes] = useState("");
@@ -291,6 +292,7 @@ export default function StockOpnameFormModal({
                     value={line.ingredientId}
                     onChange={(ingredientId) => handleIngredientChange(index, ingredientId)}
                     showStock
+                    loading={ingredients.loading}
                   />
                 </label>
               </div>

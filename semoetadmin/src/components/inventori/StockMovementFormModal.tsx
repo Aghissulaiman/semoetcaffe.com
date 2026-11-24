@@ -2,6 +2,7 @@
 
 import AppModal from "@/components/common/AppModal";
 import IngredientPicker from "@/components/common/IngredientPicker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiPost } from "@/lib/client";
 import { toDateInputValue } from "@/lib/format";
@@ -13,7 +14,7 @@ import {
   secondaryButtonClass,
   textareaClass,
 } from "@/lib/ui";
-import type { Ingredient, StockLocation } from "@/types/api";
+import type { StockLocation } from "@/types/api";
 import { useState } from "react";
 
 const MOVEMENT_TYPES = ["purchase", "order_consumption", "waste", "adjustment"];
@@ -30,7 +31,7 @@ export default function StockMovementFormModal({
   onSaved,
   defaultLocationId,
 }: StockMovementFormModalProps) {
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100&isActive=true");
+  const ingredients = useAllIngredients({ isActive: true });
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
 
   const [stockLocationId, setStockLocationId] = useState(defaultLocationId ?? "");
@@ -137,6 +138,7 @@ export default function StockMovementFormModal({
             value={ingredientId}
             onChange={setIngredientId}
             showStock
+            loading={ingredients.loading}
           />
         </label>
 

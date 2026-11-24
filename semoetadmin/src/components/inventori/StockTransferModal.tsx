@@ -2,6 +2,7 @@
 
 import AppModal from "@/components/common/AppModal";
 import IngredientPicker from "@/components/common/IngredientPicker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiPost } from "@/lib/client";
 import { toDateInputValue } from "@/lib/format";
@@ -12,7 +13,7 @@ import {
   secondaryButtonClass,
   textareaClass,
 } from "@/lib/ui";
-import type { Ingredient, StockLocation } from "@/types/api";
+import type { StockLocation } from "@/types/api";
 import { useState } from "react";
 
 interface StockTransferModalProps {
@@ -33,7 +34,7 @@ function findByName(locations: StockLocation[], keywords: string[]): string {
  * otomatis membuat mutasi keluar & masuk yang saling terhubung.
  */
 export default function StockTransferModal({ onClose, onSaved }: StockTransferModalProps) {
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100&isActive=true");
+  const ingredients = useAllIngredients({ isActive: true });
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
 
   const [fromId, setFromId] = useState("");
@@ -151,6 +152,7 @@ export default function StockTransferModal({ onClose, onSaved }: StockTransferMo
             value={ingredientId}
             onChange={setIngredientId}
             showStock
+            loading={ingredients.loading}
           />
         </label>
 

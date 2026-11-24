@@ -2,6 +2,7 @@
 
 import AppModal from "@/components/common/AppModal";
 import IngredientPicker from "@/components/common/IngredientPicker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiPatch, apiPost } from "@/lib/client";
 import { toDateInputValue } from "@/lib/format";
@@ -12,7 +13,7 @@ import {
   secondaryButtonClass,
   textareaClass,
 } from "@/lib/ui";
-import type { Ingredient, StockLocation, StockOutDocument, StockOutItem } from "@/types/api";
+import type { StockLocation, StockOutDocument, StockOutItem } from "@/types/api";
 import { cn } from "@/utils";
 import { useEffect, useMemo, useState } from "react";
 
@@ -45,7 +46,7 @@ export default function StockOutFormModal({
 }: StockOutFormModalProps) {
   const isEdit = Boolean(initial);
   const locations = useApi<StockLocation[]>("/admin/stock-locations?limit=100");
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100&isActive=true");
+  const ingredients = useAllIngredients({ isActive: true });
 
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
@@ -311,6 +312,7 @@ export default function StockOutFormModal({
                       )
                     }
                     showStock
+                    loading={ingredients.loading}
                   />
                 </label>
               </div>

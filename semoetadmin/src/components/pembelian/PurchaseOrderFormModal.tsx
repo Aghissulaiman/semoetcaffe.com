@@ -3,6 +3,7 @@
 import AppModal from "@/components/common/AppModal";
 import IngredientPicker from "@/components/common/IngredientPicker";
 import DatePicker from "@/components/form/date-picker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiPatch, apiPost } from "@/lib/client";
 import { formatIdr, toDateInputValue } from "@/lib/format";
@@ -16,7 +17,6 @@ import {
 } from "@/lib/ui";
 import type {
   Branch,
-  Ingredient,
   PurchaseOrderDetail,
 } from "@/types/api";
 import { useMemo, useState } from "react";
@@ -50,7 +50,7 @@ export default function PurchaseOrderFormModal({
   onSaved,
 }: PurchaseOrderFormModalProps) {
   const editing = Boolean(detail);
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100&isActive=true");
+  const ingredients = useAllIngredients({ isActive: true });
   const branches = useApi<Branch[]>("/branches?limit=50");
 
   const [supplierId, setSupplierId] = useState(detail?.order.supplierId ?? "");
@@ -296,6 +296,7 @@ export default function PurchaseOrderFormModal({
                       )}
                       value={item.ingredientId}
                       onChange={(ingredientId) => updateItem(item.key, { ingredientId })}
+                      loading={ingredients.loading}
                     />
                   </div>
                   <label className="flex flex-col gap-1 sm:col-span-2">

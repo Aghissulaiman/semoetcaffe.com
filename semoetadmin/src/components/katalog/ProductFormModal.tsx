@@ -5,6 +5,7 @@ import { EmptyBlock, ErrorBlock, Skeleton } from "@/components/common/DataState"
 import IngredientPicker from "@/components/common/IngredientPicker";
 import ToneBadge from "@/components/common/ToneBadge";
 import ProductImagePicker from "@/components/katalog/ProductImagePicker";
+import { useAllIngredients } from "@/hooks/useAllIngredients";
 import { useApi } from "@/hooks/useApi";
 import { ApiError, apiDelete, apiPatch, apiPost, apiPut } from "@/lib/client";
 import { formatIdr } from "@/lib/format";
@@ -20,7 +21,6 @@ import type {
   AdminProduct,
   AdminProductVariants,
   AdminVariant,
-  Ingredient,
   PreparationStation,
   Product,
   ProductCategory,
@@ -262,7 +262,7 @@ function ProductForm({
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ingredients = useApi<Ingredient[]>("/admin/ingredients?limit=100");
+  const ingredients = useAllIngredients();
   const stationsApi = useApi<PreparationStation[]>("/admin/preparation-stations");
 
   const handleImageUploaded = (uploaded: UploadedImage) => {
@@ -552,6 +552,12 @@ function ProductForm({
           <div className="rounded-xl border border-coffee-danger/30 bg-coffee-danger/5 px-4 py-3 text-theme-sm text-coffee-danger">
             {error}
           </div>
+        )}
+        {ingredients.error && (
+          <ErrorBlock message={ingredients.error} onRetry={ingredients.reload} />
+        )}
+        {ingredients.loading && (
+          <p className="text-theme-xs text-coffee-muted">Memuat daftar bahan baku…</p>
         )}
 
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -877,6 +883,7 @@ function ProductForm({
                                   updateRecipeDraft(row.key, draftIndex, { ingredientId })
                                 }
                                 showStock
+                                loading={ingredients.loading}
                               />
                             </label>
                             <label className="flex w-[130px] flex-col gap-1">
