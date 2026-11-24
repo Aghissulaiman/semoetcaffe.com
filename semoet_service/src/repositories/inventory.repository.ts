@@ -15,11 +15,14 @@ export async function listIngredients(
             i.supplier_id, i.supplier_contact, i.purchase_link,
             i.last_purchase_price_idr, i.last_purchase_qty, i.last_purchase_uom,
             i.last_yield_amount, i.last_unit_cost_idr,
-            i.created_at, i.updated_at,
+            i.created_at, i.updated_at, i.created_by, i.updated_by,
             stock.on_hand, stock.last_movement_at,
-            s.name AS supplier_name
+            s.name AS supplier_name,
+            uc.display_name AS created_by_name, uu.display_name AS updated_by_name
        FROM ingredients i
        LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN users uc ON uc.id = i.created_by
+       LEFT JOIN users uu ON uu.id = i.updated_by
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(im.quantity_delta), 0)::numeric AS on_hand,
@@ -64,10 +67,13 @@ export async function findIngredientById(ingredientId: string, executor: Exec = 
             i.supplier_id, i.supplier_contact, i.purchase_link,
             i.last_purchase_price_idr, i.last_purchase_qty, i.last_purchase_uom,
             i.last_yield_amount, i.last_unit_cost_idr,
-            i.created_at, i.updated_at,
-            s.name AS supplier_name
+            i.created_at, i.updated_at, i.created_by, i.updated_by,
+            s.name AS supplier_name,
+            uc.display_name AS created_by_name, uu.display_name AS updated_by_name
        FROM ingredients i
        LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN users uc ON uc.id = i.created_by
+       LEFT JOIN users uu ON uu.id = i.updated_by
       WHERE i.id = $1`,
     [ingredientId],
   );
@@ -96,6 +102,7 @@ export async function insertIngredient(
     lastPurchaseUom?: string | null;
     lastYieldAmount?: number;
     lastUnitCostIdr?: number;
+    createdBy?: string | null;
   },
   executor: Exec = db,
 ) {
@@ -103,8 +110,9 @@ export async function insertIngredient(
     executor,
     `INSERT INTO ingredients (sku, name, base_unit, reorder_level, is_active,
        supplier_id, supplier_contact, purchase_link, last_purchase_price_idr,
-       last_purchase_qty, last_purchase_uom, last_yield_amount, last_unit_cost_idr)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       last_purchase_qty, last_purchase_uom, last_yield_amount, last_unit_cost_idr,
+       created_by, updated_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
      RETURNING id, sku, name, base_unit, reorder_level, is_active,
        supplier_id, supplier_contact, purchase_link, last_purchase_price_idr,
        last_purchase_qty, last_purchase_uom, last_yield_amount, last_unit_cost_idr, created_at`,
@@ -122,6 +130,7 @@ export async function insertIngredient(
       input.lastPurchaseUom ?? null,
       input.lastYieldAmount ?? 0,
       input.lastUnitCostIdr ?? 0,
+      input.createdBy ?? null,
     ],
   );
 }
@@ -130,14 +139,28 @@ export async function updateIngredient(
   ingredientId: string,
   data: Record<string, unknown>,
   executor: Exec = db,
+  updatedBy?: string | null,
 ) {
   const columns = Object.keys(data);
-  if (columns.length === 0) return null;
-  const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+  if (columns.length === 0 && updatedBy === undefined) return null;
+  const sets: string[] = [];
+  const values: unknown[] = [ingredientId];
+  let idx = 2;
+  for (const [col, val] of Object.entries(data)) {
+    sets.push(`${col} = $${idx}`);
+    values.push(val);
+    idx++;
+  }
+  if (updatedBy !== undefined) {
+    sets.push(`updated_by = $${idx}`);
+    values.push(updatedBy);
+    idx++;
+  }
+  sets.push(`updated_at = now()`);
   return one(
     executor,
-    `UPDATE ingredients SET ${assignments}, updated_at = now() WHERE id = $1 RETURNING id, sku, name, base_unit, reorder_level, is_active, updated_at`,
-    [ingredientId, ...Object.values(data)],
+    `UPDATE ingredients SET ${sets.join(', ')} WHERE id = $1 RETURNING id, sku, name, base_unit, reorder_level, is_active, updated_at`,
+    values,
   );
 }
 

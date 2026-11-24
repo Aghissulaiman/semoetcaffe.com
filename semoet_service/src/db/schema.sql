@@ -991,9 +991,15 @@ CREATE TABLE IF NOT EXISTS ingredients (
   last_purchase_uom text,
   last_yield_amount numeric(14,3) NOT NULL DEFAULT 0 CHECK (last_yield_amount >= 0),
   last_unit_cost_idr bigint NOT NULL DEFAULT 0 CHECK (last_unit_cost_idr >= 0),
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE ingredients ADD COLUMN IF NOT EXISTS updated_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE public.ingredients ADD COLUMN IF NOT EXISTS updated_by uuid REFERENCES public.users(id) ON DELETE SET NULL;
 CREATE TABLE IF NOT EXISTS recipes (
   product_variant_id uuid NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
   ingredient_id uuid NOT NULL REFERENCES ingredients(id) ON DELETE RESTRICT,

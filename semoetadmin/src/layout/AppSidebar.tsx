@@ -4,6 +4,7 @@ import SemoetLogo from "@/components/common/SemoetLogo";
 import { useSidebar } from "@/context/SidebarContext";
 import { useSession } from "@/hooks/useSession";
 import { filterMenuGroups, type MenuGroup } from "@/lib/access";
+import { useOrderNotification } from "@/components/common/NotificationSound";
 import {
   BoxCubeIcon,
   BoxIconLine,
@@ -25,7 +26,7 @@ import {
 import { cn } from "@/utils";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type NavChild = {
   label: string;
@@ -92,6 +93,12 @@ const AppSidebar: React.FC = () => {
     useSidebar();
   const pathname = usePathname();
   const { me } = useSession();
+  const { play: playNotificationSound } = useOrderNotification();
+
+  // Mainkan notifikasi saat komponen sidebar dimount (sekali saja)
+  useEffect(() => {
+    playNotificationSound();
+  }, [playNotificationSound]);
 
   const showFull = isExpanded || isHovered || isMobileOpen;
 

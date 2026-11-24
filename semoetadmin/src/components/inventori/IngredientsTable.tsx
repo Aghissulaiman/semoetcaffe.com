@@ -45,6 +45,8 @@ export default function IngredientsTable({
               <td className={`${tdClass} font-medium text-coffee-espresso dark:text-coffee-cream`}>
                 {ingredient.name}
                 <div className="text-theme-xs text-coffee-muted font-mono">{ingredient.sku}</div>
+                <div className="text-theme-xs text-coffee-muted">Dibuat: {ingredient.createdByName ?? "—"}</div>
+                <div className="text-theme-xs text-coffee-muted">Diubah: {ingredient.updatedByName ?? "—"}</div>
               </td>
               <td className={tdClass}>{ingredient.supplierName || "—"}</td>
               <td className={tdClass}>{ingredient.supplierContact || "—"}</td>

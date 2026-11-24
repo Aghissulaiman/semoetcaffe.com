@@ -85,6 +85,10 @@ function shapeIngredient(row: Record<string, unknown>) {
     lastUnitCostIdr: num(row.lastUnitCostIdr),
     onHand: row.onHand === undefined ? null : num(row.onHand),
     lastMovementAt: iso(row.lastMovementAt),
+    createdBy: strOrNull(row.createdBy),
+    createdByName: strOrNull(row.createdByName),
+    updatedBy: strOrNull(row.updatedBy),
+    updatedByName: strOrNull(row.updatedByName),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };
@@ -334,6 +338,7 @@ export async function createIngredient(
         lastPurchaseUom: input.lastPurchaseUom ? normalizeText(input.lastPurchaseUom) : null,
         lastYieldAmount: num(input.lastYieldAmount),
         lastUnitCostIdr: num(input.lastUnitCostIdr),
+        createdBy: actorUserId,
       },
       tx,
     );
@@ -385,7 +390,7 @@ export async function updateIngredient(
     const current = await inventoryRepo.findIngredientById(ingredientId, tx);
     if (!current) throw notFound('Bahan baku', ingredientId);
 
-    const updated = await inventoryRepo.updateIngredient(ingredientId, data, tx);
+    const updated = await inventoryRepo.updateIngredient(ingredientId, data, tx, actorUserId);
     if (!updated) throw notFound('Bahan baku', ingredientId);
 
     await adminRepo.insertAuditLog(

@@ -15,6 +15,7 @@ import { useDateRange } from "@/hooks/useDateRange";
 import { useIsClient } from "@/hooks/useIsClient";
 import { useSession } from "@/hooks/useSession";
 import { hasPermission } from "@/lib/access";
+import { useOrderNotification } from '@/components/common/NotificationSound';
 import {
   BoxCubeIcon,
   DollarLineIcon,
@@ -37,6 +38,11 @@ const RANGE_DAYS = 14;
 
 export default function DashboardPage() {
   const { me } = useSession();
+  const { play: playNotificationSound } = useOrderNotification();
+
+  // Notifikasi suara saat ada order baru
+    // Gunakan playNotificationSound() saat order baru datang
+
   const isClient = useIsClient();
   const range = useDateRange(RANGE_DAYS);
 

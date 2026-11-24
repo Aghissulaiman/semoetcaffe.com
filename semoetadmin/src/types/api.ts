@@ -261,6 +261,10 @@ export interface Ingredient {
   lastUnitCostIdr: number;
   onHand: number | null;
   lastMovementAt: string | null;
+  createdBy?: string | null;
+  createdByName?: string | null;
+  updatedBy?: string | null;
+  updatedByName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
